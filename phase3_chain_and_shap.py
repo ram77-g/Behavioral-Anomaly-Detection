@@ -3,9 +3,13 @@
 # ==========================================
 # Instructions: Copy and paste this into a new Google Colab cell.
 
-!pip install shap
+# !pip install shap
 
 import shap
+import pandas as pd
+import numpy as np
+import joblib
+import os
 
 # 1. Mount Google Drive and Load Data
 try:
@@ -14,7 +18,7 @@ try:
     DATA_DIR = '/content/drive/MyDrive/Anomaly_Detection_Data'
 except ImportError:
     print("Not in Colab. Using local directory.")
-    DATA_DIR = './Anomaly_Detection_Data'
+    DATA_DIR = './data'
 
 print("Loading scored events and models...")
 events_df = pd.read_csv(os.path.join(DATA_DIR, 'scored_events.csv'))
@@ -28,51 +32,87 @@ feature_cols = ['hour_deviation', 'session_duration_zscore', 'is_new_device', 'i
                 'geo_velocity', 'recent_failed_auth_count', 'has_privileged_command']
 
 # 2. Rule-Based Chain Detection
-print("Running Sliding-Window Attack Chain Linker...")
-# We will flag the "Credential Compromise" chain: 
-# (Login -> Account_Settings/Password Reset -> Payroll) within 2 hours
+print("Running Configurable Sliding-Window Attack Chain Linker...")
 
 events_df['chain_involved'] = False
 events_df['chain_type'] = None
 
-# Group by entity to slide window
-grouped = events_df.groupby('entity_id')
+CHAIN_PATTERNS = [
+    {
+        'name': 'chain_credential_compromise',
+        'steps': [
+            {'resource_accessed': 'VPN'},
+            {'resource_accessed': 'Account_Settings'},
+            {'resource_accessed': 'Payroll'}
+        ],
+        'max_gap_hours': 2.0
+    },
+    {
+        'name': 'chain_stealth_exfiltration',
+        'steps': [
+            {'is_new_device': 1},
+            {'has_privileged_command': 1},
+            {'resource_accessed': 'Production_DB'}
+        ],
+        'max_gap_hours': 1.0
+    }
+]
 
+def match_step(row, step_cond):
+    for k, v in step_cond.items():
+        if row[k] != v:
+            return False
+    return True
+
+grouped = events_df.groupby('entity_id')
 chain_hits = 0
-for entity_id, group in grouped:
-    # Sort by time
+for eid, group in grouped:
     group = group.sort_values('timestamp')
+    idx_list = group.index.tolist()
     
-    # Simple state machine for the chain
-    # State 0: looking for VPN login
-    # State 1: looking for Account_Settings
-    # State 2: looking for Payroll
-    
-    chain_events_buffer = []
-    
-    for idx, row in group.iterrows():
-        if row['resource_accessed'] == 'VPN':
-            chain_events_buffer = [idx]  # start/reset chain
-        elif row['resource_accessed'] == 'Account_Settings' and len(chain_events_buffer) == 1:
-            # Check time diff
-            if (row['timestamp'] - events_df.loc[chain_events_buffer[-1], 'timestamp']) <= timedelta(hours=2):
-                chain_events_buffer.append(idx)
-        elif row['resource_accessed'] == 'Payroll' and len(chain_events_buffer) == 2:
-            if (row['timestamp'] - events_df.loc[chain_events_buffer[-1], 'timestamp']) <= timedelta(hours=2):
-                chain_events_buffer.append(idx)
-                # Chain triggered! Flag all involved events
-                events_df.loc[chain_events_buffer, 'chain_involved'] = True
-                events_df.loc[chain_events_buffer, 'chain_type'] = 'credential_compromise'
+    for pattern in CHAIN_PATTERNS:
+        steps = pattern['steps']
+        n_steps = len(steps)
+        max_gap = pattern['max_gap_hours']
+        name = pattern['name']
+        
+        # Simple contiguous sliding window for POC
+        for i in range(len(idx_list) - n_steps + 1):
+            window_indices = idx_list[i : i + n_steps]
+            window_rows = [events_df.loc[idx] for idx in window_indices]
+            
+            # Check if steps match
+            matches = True
+            for step_idx in range(n_steps):
+                if not match_step(window_rows[step_idx], steps[step_idx]):
+                    matches = False
+                    break
+            
+            if not matches:
+                continue
+                
+            # Check time gaps
+            time_valid = True
+            for step_idx in range(n_steps - 1):
+                diff = (window_rows[step_idx+1]['timestamp'] - window_rows[step_idx]['timestamp']).total_seconds() / 3600.0
+                if diff > max_gap:
+                    time_valid = False
+                    break
+                    
+            if time_valid:
+                for idx in window_indices:
+                    events_df.at[idx, 'chain_involved'] = True
+                    events_df.at[idx, 'chain_type'] = name
                 chain_hits += 1
-                chain_events_buffer = [] # Reset
 
 print(f"Chain Linker detected {chain_hits} distinct multi-step attack chains.")
 
 # 3. Filter to Alerts Only (Anomalous OR Chain Involved)
 # We only want to run SHAP on the events we are actually going to flag to the analyst
-threshold = np.percentile(events_df['anomaly_score'], 95) # Top 5%
-alerts_df = events_df[(events_df['anomaly_score'] > threshold) | (events_df['chain_involved'] == True)].copy()
-alerts_df = alerts_df.reset_index(drop=True)
+threshold = np.percentile(events_df['anomaly_score'], 99) 
+print(f"Applying strict 99th percentile anomaly threshold (score >= {threshold:.4f}) OR Chain OR High Confidence Attack...")
+mask = (events_df['anomaly_score'] >= threshold) | (events_df['chain_involved'] == True) | ((events_df['predicted_attack_class'] != 'normal') & (events_df['attack_confidence'] > 0.85))
+alerts_df = events_df[mask].copy().reset_index(drop=True)
 
 print(f"Generating Explanations for {len(alerts_df)} Alerts using SHAP...")
 

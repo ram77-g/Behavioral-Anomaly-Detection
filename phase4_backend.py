@@ -24,7 +24,9 @@ app.add_middleware(
 )
 
 # Database Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/Anomaly")
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is not set. Please configure your .env file.")
 engine = create_engine(DATABASE_URL)
 
 # 1. Static Lookups
@@ -66,6 +68,11 @@ DATA_FILE = './data/final_alerts.csv'
 
 @app.on_event("startup")
 def init_db():
+    if os.getenv("RESET_DB", "false").lower() == "true":
+        print("RESET_DB flag detected. Dropping alerts table...")
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS alerts"))
+            
     insp = inspect(engine)
     if insp.has_table('alerts'):
         print("Connected to PostgreSQL! Alerts table already exists.")

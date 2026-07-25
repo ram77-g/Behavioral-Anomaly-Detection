@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Network } from 'vis-network';
+import jsPDF from 'jspdf';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { ShieldAlert, User, Cpu, Activity, AlertTriangle, ShieldCheck, Clock, Shield, Sun, Moon } from 'lucide-react';
+import { ShieldAlert, User, Cpu, Activity, AlertTriangle, ShieldCheck, Clock, Shield, Sun, Moon, Download } from 'lucide-react';
 
 export default function App() {
   const [alerts, setAlerts] = useState([]);
   const [selectedAlert, setSelectedAlert] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [riskTrend, setRiskTrend] = useState([]);
   const [isLightMode, setIsLightMode] = useState(false);
   const graphRef = useRef(null);
@@ -25,12 +27,18 @@ export default function App() {
     fetch('http://127.0.0.1:8000/api/alerts')
       .then(res => res.json())
       .then(data => {
-        if (data.status === 'success' && data.data.length > 0) {
+        if (data.status === 'success') {
           setAlerts(data.data);
-          handleSelectAlert(data.data[0]);
+          if (data.data.length > 0) {
+            handleSelectAlert(data.data[0]);
+          }
         }
+        setIsLoading(false);
       })
-      .catch(err => console.error("Error fetching alerts:", err));
+      .catch(err => {
+        console.error("Error fetching alerts:", err);
+        setIsLoading(false);
+      });
   }, []);
 
   // 2. Fetch Entity History & Render Graph
@@ -78,8 +86,21 @@ export default function App() {
 
     const data = { nodes, edges };
     const options = {
-      physics: { enabled: true, solver: 'forceAtlas2Based' },
-      edges: { font: { color: '#a1a1aa', size: 12, background: edgeFontBg } }
+      physics: { 
+        enabled: true, 
+        solver: 'repulsion',
+        repulsion: {
+          nodeDistance: 250,
+          springLength: 200
+        }
+      },
+      edges: { 
+        font: { color: '#a1a1aa', size: 12, background: edgeFontBg, align: 'top' },
+        smooth: { type: 'continuous' }
+      },
+      nodes: {
+        margin: 15
+      }
     };
 
     if (networkRef.current) networkRef.current.destroy();
@@ -101,7 +122,86 @@ export default function App() {
     });
   };
 
-  if (!selectedAlert) return <div style={{height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>Loading Models...</div>;
+  // 5. Generate PDF Report
+  const generatePDF = () => {
+    if (!selectedAlert) return;
+    const doc = new jsPDF();
+    
+    doc.setFontSize(22);
+    doc.setTextColor(220, 38, 38);
+    doc.text('SOC Incident Report', 20, 20);
+    
+    doc.setFontSize(12);
+    doc.setTextColor(100);
+    doc.text(`Generated on: ${new Date().toLocaleString()}`, 20, 30);
+    
+    doc.setDrawColor(200);
+    doc.line(20, 35, 190, 35);
+    
+    doc.setFontSize(16);
+    doc.setTextColor(0);
+    doc.text('Alert Details', 20, 45);
+    
+    doc.setFontSize(12);
+    doc.text(`Alert ID: ${selectedAlert.id}`, 20, 55);
+    doc.text(`Entity ID: ${selectedAlert.entity_id}`, 20, 65);
+    doc.text(`Timestamp: ${selectedAlert.timestamp}`, 20, 75);
+    doc.text(`Source IP: ${selectedAlert.source_ip}`, 20, 85);
+    doc.text(`Geo Location: ${selectedAlert.geo_location}`, 20, 95);
+    doc.text(`Resource Accessed: ${selectedAlert.resource_accessed}`, 20, 105);
+    
+    doc.line(20, 115, 190, 115);
+    
+    doc.setFontSize(16);
+    doc.text('Threat Analysis', 20, 125);
+    
+    doc.setFontSize(12);
+    doc.text(`Predicted Attack Class: ${selectedAlert.predicted_attack_class}`, 20, 135);
+    doc.text(`AI Confidence Level: ${(selectedAlert.attack_confidence * 100).toFixed(2)}%`, 20, 145);
+    doc.text(`Adaptive Risk Score: ${selectedAlert.adaptive_risk_score}/100`, 20, 155);
+    doc.text(`Chain Involved: ${selectedAlert.chain_involved ? 'Yes (Critical)' : 'No'}`, 20, 165);
+    doc.text(`MITRE Mapping: ${selectedAlert.mitre_mapping.id} (${selectedAlert.mitre_mapping.tactic})`, 20, 175);
+    
+    doc.line(20, 185, 190, 185);
+    
+    doc.setFontSize(16);
+    doc.text('AI Explanations (SHAP)', 20, 195);
+    
+    doc.setFontSize(12);
+    const reasons = selectedAlert.reasons.split(' | ');
+    let y = 205;
+    reasons.forEach(r => {
+      doc.text(`- ${r}`, 20, y);
+      y += 10;
+    });
+    
+    y += 5;
+    doc.line(20, y, 190, y);
+    y += 10;
+    
+    doc.setFontSize(16);
+    doc.text('Recommended Action', 20, y);
+    y += 10;
+    
+    doc.setFontSize(12);
+    doc.setTextColor(220, 38, 38);
+    const splitRec = doc.splitTextToSize(selectedAlert.recommendation, 170);
+    doc.text(splitRec, 20, y);
+    
+    doc.save(`Incident_Report_${selectedAlert.entity_id}.pdf`);
+  };
+
+  if (isLoading) return <div style={{height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>Loading Models...</div>;
+
+  if (alerts.length === 0) return (
+    <div style={{height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-dark)', color: 'var(--text-main)'}}>
+      <ShieldCheck size={64} color="#10b981" style={{marginBottom: '1rem'}} />
+      <h2>Zero Inbox</h2>
+      <p style={{color: 'var(--text-muted)'}}>All clear! No pending alerts to review.</p>
+    </div>
+  );
+
+  if (!selectedAlert) return null;
 
   return (
     <div>
@@ -237,15 +337,24 @@ export default function App() {
 
           {/* Action Bar */}
           <div className="action-bar fade-in" style={{animationDelay: '0.5s'}}>
-            <span style={{marginRight: 'auto', color: 'var(--text-muted)', fontSize: '0.95rem'}}>
+            <span style={{color: 'var(--text-muted)', fontSize: '0.95rem'}}>
               Analyst Feedback Required for Alert #{selectedAlert.id}
             </span>
-            <button className="btn btn-reject" onClick={() => handleFeedback('reject')}>
-              Mark as False Positive
-            </button>
-            <button className="btn btn-accept" onClick={() => handleFeedback('accept')}>
-              Confirm Threat (True Positive)
-            </button>
+            <div style={{marginLeft: 'auto', display: 'flex', gap: '1rem'}}>
+              <button 
+                className="btn" 
+                style={{background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-main)'}}
+                onClick={generatePDF}
+              >
+                <Download size={16} /> Download Report
+              </button>
+              <button className="btn btn-reject" onClick={() => handleFeedback('reject')}>
+                Mark as False Positive
+              </button>
+              <button className="btn btn-accept" onClick={() => handleFeedback('accept')}>
+                Confirm Threat (True Positive)
+              </button>
+            </div>
           </div>
 
         </div>

@@ -33,7 +33,7 @@ We transform raw logs into mathematical vectors to train our AI models.
 ### Phase 4: Full-Stack React & FastAPI Dashboard
 The final alerts are pushed to a PostgreSQL database and served to a cutting-edge analyst dashboard.
 * **Backend:** Applies an Adaptive Risk Score to every alert based on contextual severity and maps attacks to the official MITRE ATT&CK Framework.
-* **Frontend:** Features a dynamic alert queue, an interactive attack relationship graph, historical risk trendlines, and a one-click feedback loop to resolve alerts.
+* **Frontend:** Features a dynamic alert queue, an interactive attack relationship graph, historical risk trendlines, one-click PDF incident report generation, and a feedback loop to resolve alerts.
 
 ---
 
@@ -74,16 +74,17 @@ The final alerts are pushed to a PostgreSQL database and served to a cutting-edg
    `DATABASE_URL=postgresql://username:password@localhost:5432/Anomaly`
 
 ### 3. Machine Learning Pipeline Execution
-Note: The ML models and data generation can be run locally or in Google Colab.
-1. Run `phase1_data_generator.py` to generate the foundational dataset.
-2. Run `phase2_core_ml.py` to engineer features and train the Isolation Forest and XGBoost models.
-3. Run `phase3_chain_and_shap.py` to link temporal attack chains, generate SHAP explanations, and output the `final_alerts.csv`.
+Our pipeline is designed to run 100% locally on your machine.
+1. Open a terminal in the root directory.
+2. Install Python dependencies: `pip install pandas numpy scikit-learn xgboost shap sqlalchemy psycopg2-binary fastapi uvicorn python-dotenv`
+3. Run `python phase1_data_generator.py` to generate the foundational dataset (`data/events.csv`).
+4. Run `python phase2_core_ml.py` to engineer features and train the Isolation Forest and XGBoost models.
+5. Run `python phase3_chain_and_shap.py` to link temporal attack chains, generate SHAP explanations, and output the `data/final_alerts.csv`.
 
 ### 4. Backend Setup
 1. Open a terminal in the root directory.
-2. Install Python dependencies: `pip install fastapi uvicorn pandas numpy sqlalchemy psycopg2-binary`
-3. Start the FastAPI server: `python -m uvicorn phase4_backend:app --reload`
-* The backend will automatically initialize the database table using the `final_alerts.csv` on the first startup.
+2. Start the FastAPI server: `python -m uvicorn phase4_backend:app --reload`
+* The backend will automatically initialize the database table using the `data/final_alerts.csv` on the first startup.
 
 ### 5. Frontend Setup
 1. Open a new terminal and navigate to the `dashboard` directory.
