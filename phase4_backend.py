@@ -3,12 +3,15 @@
 # ==========================================
 # Run this locally using: python -m uvicorn phase4_backend:app --reload
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from typing import List
+import json
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
 import numpy as np
 import os
+import asyncio
 from sqlalchemy import create_engine, text, inspect
 from dotenv import load_dotenv
 
@@ -22,6 +25,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# WebSocket Connection Manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except:
+                pass
+
+manager_static = ConnectionManager()
+manager_live = ConnectionManager()
 
 # Database Configuration
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -55,9 +80,15 @@ def calculate_risk_score(row):
     score = 0
     score += min(max(row.get('anomaly_score', 0) * 15, 0), 20)
     
-    if row.get('attack_confidence', 0) > 0.8: score += 15
-    if row.get('chain_involved', False): score += 40
-    if row.get('resource_accessed') in ['Payroll', 'Production_DB']: score += 25
+    # Baseline for confident attacks
+    if row.get('predicted_attack_class', 'normal') != 'normal':
+        if row.get('attack_confidence', 0) > 0.8: 
+            score += 45
+        else:
+            score += 25
+            
+    if row.get('chain_involved', False): score += 35
+    if row.get('resource_accessed') in ['Payroll', 'Production_DB']: score += 20
     if row.get('is_new_device', 0) == 1: score += 15
     if row.get('is_new_geo', 0) == 1: score += 10
         
@@ -75,6 +106,9 @@ def init_db():
             
     insp = inspect(engine)
     if insp.has_table('alerts'):
+        if not insp.has_table('live_alerts'):
+            with engine.begin() as conn:
+                conn.execute(text("CREATE TABLE live_alerts (LIKE alerts INCLUDING ALL);"))
         print("Connected to PostgreSQL! Alerts table already exists.")
         return
         
@@ -116,21 +150,21 @@ def init_db():
     df['status'] = 'Open'
     df['analyst_notes'] = ''
     
-    # Write to PostgreSQL
+    # Write to PostgreSQL for Static DB
     df.to_sql('alerts', engine, index=False)
     
-    # Add a primary key constraint to the id column so we can easily update it
+    # Create the live_alerts table by copying the schema but with 0 rows
+    df.iloc[0:0].to_sql('live_alerts', engine, if_exists='replace', index=False)
+    
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE alerts ADD PRIMARY KEY (id);"))
         
     print(f"Successfully wrote {len(df)} enriched alerts to PostgreSQL.")
 
 # 4. API Endpoints
-@app.get("/api/alerts")
-def get_alerts():
+def _fetch_alerts_data(table="alerts"):
     with engine.connect() as conn:
-        result = conn.execute(text("SELECT * FROM alerts WHERE status = 'Open' ORDER BY adaptive_risk_score DESC"))
-        # Restructure flat MITRE columns back into dictionary object for the frontend
+        result = conn.execute(text(f"SELECT * FROM {table} WHERE status = 'Open' ORDER BY adaptive_risk_score DESC"))
         alerts = []
         for row in result.mappings():
             d = dict(row)
@@ -138,10 +172,130 @@ def get_alerts():
             alerts.append(d)
         return {"status": "success", "total": len(alerts), "data": alerts}
 
+# ----------------------------------------
+# LIVE SIMULATION ENGINE (Integrated)
+# ----------------------------------------
+sim_task = None
+sim_index = 0
+is_sim_running = False
+
+# Cache the dataframe so we don't load it repeatedly
+_sim_df_cache = None
+
+def get_sim_df():
+    global _sim_df_cache
+    if _sim_df_cache is None:
+        df = pd.read_csv('./data/final_alerts.csv')
+        mask = (df['predicted_attack_class'] != 'normal') | (df['chain_involved'] == True)
+        df = df[mask].copy().reset_index(drop=True)
+        df['is_consecutive_duplicate'] = (df['entity_id'] == df['entity_id'].shift()) & (df['predicted_attack_class'] == df['predicted_attack_class'].shift())
+        df = df[~df['is_consecutive_duplicate']].drop(columns=['is_consecutive_duplicate']).reset_index(drop=True)
+        _sim_df_cache = df
+    return _sim_df_cache
+
+async def simulation_loop():
+    global sim_index, is_sim_running
+    try:
+        df = get_sim_df()
+        
+        while is_sim_running and sim_index < len(df):
+            row = df.iloc[sim_index]
+            alert = row.to_dict()
+            
+            risk_score = calculate_risk_score(alert)
+            attack_type = alert['predicted_attack_class'] if not alert['chain_involved'] else 'chain_credential_compromise'
+            mapping = MITRE_MAPPING.get(attack_type, MITRE_MAPPING['normal'])
+            
+            enriched_df = pd.DataFrame([{
+                **alert,
+                'id': sim_index + 1,
+                'adaptive_risk_score': risk_score,
+                'mitre_mapping_id': mapping['id'],
+                'mitre_mapping_tactic': mapping['tactic'],
+                'recommendation': ACTION_RECOMMENDATIONS.get(attack_type, 'Investigate further.'),
+                'status': 'Open',
+                'analyst_notes': ''
+            }])
+            
+            # Insert into live_alerts
+            enriched_df.to_sql('live_alerts', engine, if_exists='append', index=False)
+            
+            # Broadcast via websocket
+            await manager_live.broadcast(_fetch_alerts_data("live_alerts"))
+            
+            sim_index += 1
+            await asyncio.sleep(3.0)
+    except asyncio.CancelledError:
+        print("Simulation task cancelled gracefully.")
+    except Exception as e:
+        print(f"Simulation task crashed: {e}")
+    finally:
+        is_sim_running = False
+
+@app.post("/api/simulation/start")
+async def start_simulation():
+    global sim_task, is_sim_running
+    if not is_sim_running:
+        is_sim_running = True
+        sim_task = asyncio.create_task(simulation_loop())
+    return {"status": "started", "index": sim_index}
+
+@app.post("/api/simulation/stop")
+async def stop_simulation():
+    global is_sim_running, sim_task
+    is_sim_running = False
+    if sim_task:
+        sim_task.cancel()
+    return {"status": "stopped", "index": sim_index}
+
+@app.post("/api/simulation/reset")
+async def reset_simulation():
+    global is_sim_running, sim_task, sim_index
+    is_sim_running = False
+    if sim_task:
+        sim_task.cancel()
+        
+    sim_index = 0
+    with engine.begin() as conn:
+        conn.execute(text("TRUNCATE TABLE live_alerts"))
+        
+    await manager_live.broadcast(_fetch_alerts_data("live_alerts"))
+    return {"status": "reset", "index": sim_index}
+
+@app.get("/api/simulation/status")
+async def status_simulation():
+    return {"is_running": is_sim_running, "index": sim_index}
+
+@app.get("/api/alerts")
+def get_alerts(mode: str = "static"):
+    table = "live_alerts" if mode == "live" else "alerts"
+    return _fetch_alerts_data(table)
+
+@app.websocket("/ws/alerts/{mode}")
+async def websocket_alerts(websocket: WebSocket, mode: str):
+    mgr = manager_live if mode == "live" else manager_static
+    table = "live_alerts" if mode == "live" else "alerts"
+    
+    await mgr.connect(websocket)
+    await websocket.send_json(_fetch_alerts_data(table))
+    try:
+        while True:
+            data = await websocket.receive_text()
+    except WebSocketDisconnect:
+        mgr.disconnect(websocket)
+
+@app.post("/api/broadcast")
+async def trigger_broadcast(mode: str = "static"):
+    mgr = manager_live if mode == "live" else manager_static
+    table = "live_alerts" if mode == "live" else "alerts"
+    await mgr.broadcast(_fetch_alerts_data(table))
+    return {"status": "success"}
+
 @app.get("/api/entity/{entity_id}/history")
-def get_entity_history(entity_id: str):
+def get_entity_history(entity_id: str, mode: str = "static"):
+    table = "live_alerts" if mode == "live" else "alerts"
     with engine.connect() as conn:
-        query = text("SELECT timestamp, adaptive_risk_score FROM alerts WHERE entity_id = :eid ORDER BY timestamp DESC")
+        query = text(f"SELECT timestamp, adaptive_risk_score FROM {table} WHERE entity_id = :eid ORDER BY timestamp DESC")
         result = conn.execute(query, {"eid": entity_id})
         trend = [{"timestamp": row.timestamp, "risk_score": row.adaptive_risk_score} for row in result]
         return {"status": "success", "entity_id": entity_id, "risk_trend": trend[::-1]}
@@ -151,15 +305,21 @@ class FeedbackRequest(BaseModel):
     notes: str = ""
 
 @app.post("/api/alerts/{alert_id}/feedback")
-def submit_feedback(alert_id: int, feedback: FeedbackRequest):
+async def submit_feedback(alert_id: int, feedback: FeedbackRequest, mode: str = "static"):
     new_status = 'Resolved - True Positive' if feedback.decision == 'accept' else 'Resolved - False Positive'
+    
+    table = "live_alerts" if mode == "live" else "alerts"
+    mgr = manager_live if mode == "live" else manager_static
     
     with engine.begin() as conn:
         result = conn.execute(
-            text("UPDATE alerts SET status = :status, analyst_notes = :notes WHERE id = :id"),
+            text(f"UPDATE {table} SET status = :status, analyst_notes = :notes WHERE id = :id"),
             {"status": new_status, "notes": feedback.notes, "id": alert_id}
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Alert not found")
             
+    # Broadcast updated list to all WebSocket clients for the correct tab
+    await mgr.broadcast(_fetch_alerts_data(table))
+    
     return {"status": "success", "message": f"Feedback logged for alert {alert_id} in PostgreSQL."}

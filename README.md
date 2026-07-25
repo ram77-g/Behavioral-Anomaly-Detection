@@ -1,6 +1,6 @@
 # Honeywell SOC Assistant: AI-Powered Behavioral Anomaly Detection
 
-**Version:** v1.0 (Still under update)
+**Version:** v1.1 (Live Simulation Integrated)
 
 ---
 
@@ -27,13 +27,14 @@ We transform raw logs into mathematical vectors to train our AI models.
 * **Dual-Model Approach:** An Isolation Forest model evaluates the data to filter out the noise. An XGBoost model then evaluates the anomalies and outputs a probability distribution across all attack classes to determine the AI Confidence Level.
 
 ### Phase 3: Attack Chain Linking & XAI (Explainable AI)
-* **Temporal Chain Linker:** A sliding-window state machine that connects isolated events across a 2-hour window to detect complex Kill Chains.
+* **Temporal Chain Linker:** A sliding-window state machine that connects isolated events across a 2-hour window to detect complex Kill Chains. Built as an extensible library, it is currently seeded with 2 proof-of-concept patterns (Credential Compromise and Stealth Exfiltration).
 * **Explainable AI (SHAP):** We integrated the SHAP library to crack open the XGBoost model. It calculates exactly which features drove the AI's decision and translates them into human-readable reasons, providing critical context to the analyst.
 
 ### Phase 4: Full-Stack React & FastAPI Dashboard
-The final alerts are pushed to a PostgreSQL database and served to a cutting-edge analyst dashboard.
-* **Backend:** Applies an Adaptive Risk Score to every alert based on contextual severity and maps attacks to the official MITRE ATT&CK Framework.
-* **Frontend:** Features a dynamic alert queue, an interactive attack relationship graph, historical risk trendlines, one-click PDF incident report generation, and a feedback loop to resolve alerts.
+The final alerts are served to a cutting-edge analyst dashboard powered by PostgreSQL.
+* **Dual Environment Backend:** The FastAPI backend securely segregates historical alerts from real-time live simulation streams using distinct database tables (`alerts` vs `live_alerts`) and dedicated WebSocket channels.
+* **Live Simulation Engine:** Features a native, built-in `asyncio` background task that simulates real-time attack data ingestion. It deduplicates log spam while flawlessly preserving tactical attack pivots (e.g., an attacker switching from Brute Force to Credential Stuffing).
+* **Frontend UI:** Features a real-time dual-mode dashboard. Analysts can instantly toggle between static investigation and the live event stream. It includes a dynamic attack relationship network graph, historical risk trendlines, fully integrated start/pause/reset simulation controls, one-click PDF incident report generation, and a direct database feedback loop for continuous learning.
 
 ---
 
@@ -47,15 +48,17 @@ The final alerts are pushed to a PostgreSQL database and served to a cutting-edg
 * Pandas & Numpy
 
 **Backend API:**
-* FastAPI
+* FastAPI (REST & WebSockets)
 * Uvicorn
 * SQLAlchemy (PostgreSQL Integration)
+* Asyncio (Live Simulation Engine)
 
 **Frontend Dashboard:**
 * React (Vite)
 * Custom CSS Glassmorphism
-* vis-network (Relationship Graphs)
+* vis-network (Interactive Relationship Graphs)
 * recharts (Trendlines)
+* jsPDF (Automated Reporting)
 * Lucide Icons
 
 ---
@@ -76,7 +79,7 @@ The final alerts are pushed to a PostgreSQL database and served to a cutting-edg
 ### 3. Machine Learning Pipeline Execution
 Our pipeline is designed to run 100% locally on your machine.
 1. Open a terminal in the root directory.
-2. Install Python dependencies: `pip install pandas numpy scikit-learn xgboost shap sqlalchemy psycopg2-binary fastapi uvicorn python-dotenv`
+2. Install Python dependencies: `pip install pandas numpy scikit-learn xgboost shap sqlalchemy psycopg2-binary fastapi uvicorn websockets python-dotenv`
 3. Run `python phase1_data_generator.py` to generate the foundational dataset (`data/events.csv`).
 4. Run `python phase2_core_ml.py` to engineer features and train the Isolation Forest and XGBoost models.
 5. Run `python phase3_chain_and_shap.py` to link temporal attack chains, generate SHAP explanations, and output the `data/final_alerts.csv`.
@@ -91,6 +94,7 @@ Our pipeline is designed to run 100% locally on your machine.
 2. Install Node dependencies: `npm install`
 3. Start the React development server: `npm run dev`
 4. Access the SOC Assistant dashboard in your browser at the provided localhost URL.
+5. **Live Simulation:** Once on the dashboard, toggle the "Live Simulation" button at the top and hit **Start** to watch the real-time event stream!
 
 ---
 

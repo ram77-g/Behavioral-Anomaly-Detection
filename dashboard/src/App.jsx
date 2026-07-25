@@ -10,6 +10,8 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [riskTrend, setRiskTrend] = useState([]);
   const [isLightMode, setIsLightMode] = useState(false);
+  const [simulationMode, setSimulationMode] = useState(false);
+  const [isSimRunning, setIsSimRunning] = useState(false);
   const graphRef = useRef(null);
   const networkRef = useRef(null);
 
@@ -22,31 +24,56 @@ export default function App() {
     }
   }, [isLightMode]);
 
-  // 1. Fetch Alerts from FastAPI
+  // 1. WebSocket Connection for Real-Time Alerts
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/alerts')
-      .then(res => res.json())
-      .then(data => {
-        if (data.status === 'success') {
-          setAlerts(data.data);
-          if (data.data.length > 0) {
-            handleSelectAlert(data.data[0]);
-          }
-        }
+    setIsLoading(true);
+    setAlerts([]); // Clear UI while switching modes
+    const modeStr = simulationMode ? "live" : "static";
+    const ws = new WebSocket(`ws://127.0.0.1:8000/ws/alerts/${modeStr}`);
+    
+    // Also fetch current simulation status if entering live mode
+    if (simulationMode) {
+      fetch('http://127.0.0.1:8000/api/simulation/status')
+        .then(res => res.json())
+        .then(data => setIsSimRunning(data.is_running))
+        .catch(console.error);
+    }
+    
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.status === 'success') {
+        setAlerts(data.data);
         setIsLoading(false);
-      })
-      .catch(err => {
-        console.error("Error fetching alerts:", err);
-        setIsLoading(false);
-      });
-  }, []);
+      }
+    };
+
+    ws.onerror = (err) => {
+      console.error("WebSocket error:", err);
+      setIsLoading(false);
+    };
+
+    return () => ws.close();
+  }, [simulationMode]);
+
+  // Auto-select first alert if current selection is resolved/missing
+  useEffect(() => {
+    if (alerts.length > 0) {
+      const currentExists = selectedAlert && alerts.find(a => a.id === selectedAlert.id);
+      if (!currentExists) {
+        handleSelectAlert(alerts[0]);
+      }
+    } else {
+      setSelectedAlert(null);
+    }
+  }, [alerts, selectedAlert]);
 
   // 2. Fetch Entity History & Render Graph
   const handleSelectAlert = (alert) => {
     setSelectedAlert(alert);
     
+    const modeStr = simulationMode ? "live" : "static";
     // Fetch Trend
-    fetch(`http://127.0.0.1:8000/api/entity/${alert.entity_id}/history`)
+    fetch(`http://127.0.0.1:8000/api/entity/${alert.entity_id}/history?mode=${modeStr}`)
       .then(res => res.json())
       .then(data => {
         if (data.status === 'success') {
@@ -70,7 +97,7 @@ export default function App() {
     const nodes = [
       { id: 1, label: `Entity:\n${selectedAlert.entity_id}`, shape: 'circle', color: { background: nodeBg, border: '#3b82f6' }, font: { color: nodeFont } },
       { id: 2, label: `IP:\n${selectedAlert.source_ip}`, shape: 'box', color: { background: nodeBg, border: '#94a3b8' }, font: { color: nodeFont } },
-      { id: 3, label: `Resource:\n${selectedAlert.resource_accessed}`, shape: 'diamond', color: { background: '#ef4444', border: '#dc2626' }, font: { color: 'white' } }
+      { id: 3, label: `Resource:\n${selectedAlert.resource_accessed}`, shape: 'diamond', color: { background: '#ef4444', border: '#dc2626' }, font: { color: nodeFont } }
     ];
 
     const edges = [
@@ -79,13 +106,16 @@ export default function App() {
     ];
 
     if (selectedAlert.chain_involved) {
-      nodes.push({ id: 4, label: 'Compromised\nSequence', shape: 'star', color: { background: '#ef4444', border: '#dc2626' }, font: { color: 'white' } });
+      nodes.push({ id: 4, label: 'Compromised\nSequence', shape: 'star', color: { background: '#ef4444', border: '#dc2626' }, font: { color: nodeFont } });
       edges.push({ from: 1, to: 4, color: '#ef4444', width: 2 });
       edges.push({ from: 4, to: 3, color: '#ef4444', width: 2 });
     }
 
     const data = { nodes, edges };
     const options = {
+      layout: {
+        randomSeed: 42
+      },
       physics: { 
         enabled: true, 
         solver: 'repulsion',
@@ -95,7 +125,7 @@ export default function App() {
         }
       },
       edges: { 
-        font: { color: '#a1a1aa', size: 12, background: edgeFontBg, align: 'top' },
+        font: { color: '#a1a1aa', size: 12, background: edgeFontBg, align: 'top', strokeWidth: 0 },
         smooth: { type: 'continuous' }
       },
       nodes: {
@@ -109,17 +139,14 @@ export default function App() {
 
   // 4. Handle Feedback Action
   const handleFeedback = (decision) => {
-    fetch(`http://127.0.0.1:8000/api/alerts/${selectedAlert.id}/feedback`, {
+    const modeStr = simulationMode ? "live" : "static";
+    fetch(`http://127.0.0.1:8000/api/alerts/${selectedAlert.id}/feedback?mode=${modeStr}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ decision, notes: "Logged via Dashboard" })
     })
-    .then(res => res.json())
-    .then(data => {
-      const newAlerts = alerts.filter(a => a.id !== selectedAlert.id);
-      setAlerts(newAlerts);
-      if (newAlerts.length > 0) handleSelectAlert(newAlerts[0]);
-    });
+    .catch(err => console.error("Error logging feedback:", err));
+    // Note: We no longer manually update local state. The backend WebSocket broadcast will automatically sync all clients.
   };
 
   // 5. Generate PDF Report
@@ -193,22 +220,67 @@ export default function App() {
 
   if (isLoading) return <div style={{height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>Loading Models...</div>;
 
-  if (alerts.length === 0) return (
-    <div style={{height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-dark)', color: 'var(--text-main)'}}>
-      <ShieldCheck size={64} color="#10b981" style={{marginBottom: '1rem'}} />
-      <h2>Zero Inbox</h2>
-      <p style={{color: 'var(--text-muted)'}}>All clear! No pending alerts to review.</p>
-    </div>
-  );
-
-  if (!selectedAlert) return null;
-
   return (
-    <div>
+    <div className={simulationMode ? 'simulation-mode-active' : ''}>
       {/* NAVBAR */}
-      <div className="navbar">
-        <div className="nav-title">
-          <Shield color="#3b82f6" /> Honeywell SOC Assistant
+      <div className="navbar" style={{ borderBottom: simulationMode ? '2px solid #ef4444' : '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <div className="nav-title" style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+            <Shield color={simulationMode ? "#ef4444" : "#3b82f6"} /> Honeywell SOC Assistant
+          </div>
+            
+          <div style={{ display: 'flex', background: 'var(--bg-dark)', borderRadius: '6px', padding: '2px', border: '1px solid var(--border-color)', marginLeft: '2rem' }}>
+            <button 
+              onClick={() => setSimulationMode(false)}
+              style={{ padding: '4px 12px', fontSize: '12px', borderRadius: '4px', background: !simulationMode ? '#3b82f6' : 'transparent', border: 'none', cursor: 'pointer', color: !simulationMode ? '#ffffff' : '#94a3b8' }}
+            >
+              <span style={{ fontWeight: '500', WebkitTextFillColor: 'initial' }}>Static DB</span>
+            </button>
+            <button 
+              onClick={() => setSimulationMode(true)}
+              style={{ padding: '4px 12px', fontSize: '12px', borderRadius: '4px', background: simulationMode ? '#ef4444' : 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', color: simulationMode ? '#ffffff' : '#94a3b8' }}
+            >
+              <Activity size={14} color={simulationMode ? '#ffffff' : '#94a3b8'} /> 
+              <span style={{ fontWeight: '500', WebkitTextFillColor: 'initial' }}>Live Simulation</span>
+            </button>
+          </div>
+          
+          {simulationMode && (
+            <div style={{ display: 'flex', gap: '10px', marginLeft: '2rem' }}>
+              <button 
+                onClick={() => {
+                  fetch('http://127.0.0.1:8000/api/simulation/start', {method: 'POST'})
+                    .then(() => setIsSimRunning(true))
+                    .catch(console.error);
+                }}
+                disabled={isSimRunning}
+                style={{ padding: '6px 16px', borderRadius: '4px', background: isSimRunning ? 'var(--bg-dark)' : '#10b981', border: '1px solid #10b981', color: isSimRunning ? 'var(--text-muted)' : '#fff', cursor: isSimRunning ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
+              >
+                ▶ Start
+              </button>
+              <button 
+                onClick={() => {
+                  fetch('http://127.0.0.1:8000/api/simulation/stop', {method: 'POST'})
+                    .then(() => setIsSimRunning(false))
+                    .catch(console.error);
+                }}
+                disabled={!isSimRunning}
+                style={{ padding: '6px 16px', borderRadius: '4px', background: !isSimRunning ? 'var(--bg-dark)' : '#f59e0b', border: '1px solid #f59e0b', color: !isSimRunning ? 'var(--text-muted)' : '#fff', cursor: !isSimRunning ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
+              >
+                ⏸ Pause
+              </button>
+              <button 
+                onClick={() => {
+                  fetch('http://127.0.0.1:8000/api/simulation/reset', {method: 'POST'})
+                    .then(() => setIsSimRunning(false))
+                    .catch(console.error);
+                }}
+                style={{ padding: '6px 16px', borderRadius: '4px', background: 'transparent', border: '1px solid #ef4444', color: '#ef4444', cursor: 'pointer', fontWeight: 'bold' }}
+              >
+                🔄 Reset
+              </button>
+            </div>
+          )}
         </div>
         
         {/* THEME TOGGLE */}
@@ -221,7 +293,26 @@ export default function App() {
         </button>
       </div>
 
-      <div className="app-container">
+      {alerts.length === 0 ? (
+        <div style={{height: 'calc(100vh - 60px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-dark)', color: 'var(--text-main)'}}>
+          {simulationMode ? (
+            <>
+              <Activity size={64} color={isSimRunning ? "#ef4444" : "#94a3b8"} style={{marginBottom: '1rem', animation: isSimRunning ? 'pulse 2s infinite' : 'none'}} />
+              <h2>{isSimRunning ? "Streaming Live Events..." : "Simulation Ready"}</h2>
+              <p style={{color: 'var(--text-muted)'}}>
+                {isSimRunning ? "Waiting for the first event..." : <>Click <strong style={{color: '#10b981'}}>Start</strong> in the top menu to begin the feed.</>}
+              </p>
+            </>
+          ) : (
+            <>
+              <ShieldCheck size={64} color="#10b981" style={{marginBottom: '1rem'}} />
+              <h2>Zero Inbox</h2>
+              <p style={{color: 'var(--text-muted)'}}>All clear! No pending alerts to review.</p>
+            </>
+          )}
+        </div>
+      ) : !selectedAlert ? null : (
+        <div className="app-container">
         {/* SIDEBAR: Alert Queue */}
         <div className="alert-sidebar fade-in">
           <div className="sidebar-header">
@@ -358,7 +449,8 @@ export default function App() {
           </div>
 
         </div>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

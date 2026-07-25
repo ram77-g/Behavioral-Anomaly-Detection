@@ -55,13 +55,35 @@ CHAIN_PATTERNS = [
             {'resource_accessed': 'Production_DB'}
         ],
         'max_gap_hours': 1.0
+    },
+    {
+        'name': 'chain_brute_force_success',
+        'steps': [
+            {'recent_failed_auth_count': {'>': 3}},
+            {'is_new_device': 1},
+            {'resource_accessed': 'Production_DB'}
+        ],
+        'max_gap_hours': 1.5
+    },
+    {
+        'name': 'chain_lateral_movement',
+        'steps': [
+            {'is_new_geo': 1},
+            {'resource_accessed': 'Internal_Wiki'},
+            {'has_privileged_command': 1}
+        ],
+        'max_gap_hours': 2.0
     }
 ]
 
 def match_step(row, step_cond):
     for k, v in step_cond.items():
-        if row[k] != v:
-            return False
+        if isinstance(v, dict):
+            if '>' in v and not (row[k] > v['>']): return False
+            if '<' in v and not (row[k] < v['<']): return False
+        else:
+            if row[k] != v:
+                return False
     return True
 
 grouped = events_df.groupby('entity_id')
@@ -146,27 +168,38 @@ for i in range(len(alerts_df)):
         feat = feature_cols[idx]
         val = alerts_df.loc[i, feat]
         
-        # Rule-based text mapping for SHAP features
-        if feat == 'hour_deviation' and val > 2:
-            row_reasons.append(f"Login occurred {val:.1f} hours outside normal behavior")
-        elif feat == 'is_new_device' and val == 1:
-            row_reasons.append("Accessed from a completely unrecognized device")
-        elif feat == 'is_new_geo' and val == 1:
-            row_reasons.append("Accessed from a geographic location never seen before")
-        elif feat == 'session_duration_zscore' and val > 2:
-            row_reasons.append("Session duration was exceptionally long compared to baseline")
-        elif feat == 'session_duration_zscore' and val < -1:
-            row_reasons.append("Rapid automated-like session detected")
-        elif feat == 'geo_velocity' and val > 800:
-            row_reasons.append(f"Physically impossible travel velocity detected ({val:.0f} km/h)")
-        elif feat == 'recent_failed_auth_count' and val > 3:
-            row_reasons.append(f"High number of recent failed authentications ({val:.0f} attempts)")
-        elif feat == 'has_privileged_command' and val == 1:
-            row_reasons.append("Execution of highly privileged commands detected")
+        # If SHAP determined this feature was a primary driver (positive impact on prediction)
+        if row_shap[idx] > 0:
+            if feat == 'hour_deviation':
+                row_reasons.append(f"Login occurred {val:.1f} hours outside normal behavior")
+            elif feat == 'is_new_device':
+                row_reasons.append("Accessed from an unrecognized device")
+            elif feat == 'is_new_geo':
+                row_reasons.append("Accessed from a new geographic location")
+            elif feat == 'session_duration_zscore':
+                if val > 0:
+                    row_reasons.append(f"Session duration unusually long (z-score: {val:.1f})")
+                else:
+                    row_reasons.append(f"Rapid automated-like session (z-score: {val:.1f})")
+            elif feat == 'geo_velocity':
+                if val > 800:
+                    row_reasons.append(f"Physically impossible travel velocity ({val:.0f} km/h)")
+                else:
+                    row_reasons.append(f"Anomalous geographic velocity pattern")
+            elif feat == 'recent_failed_auth_count':
+                if val > 3:
+                    row_reasons.append(f"High number of recent failed authentications ({val:.0f} attempts)")
+                else:
+                    row_reasons.append(f"Anomalous authentication pattern")
+            elif feat == 'has_privileged_command':
+                row_reasons.append("Execution of highly privileged commands detected")
+            else:
+                row_reasons.append(f"Highly anomalous behavior detected in {feat} (value: {val:.1f})")
             
     # Add chain context if applicable
     if alerts_df.loc[i, 'chain_involved']:
-        row_reasons.insert(0, "CRITICAL: Event is part of a detected Credential Compromise attack chain.")
+        chain_name = str(alerts_df.loc[i, 'chain_type']).replace('_', ' ').title()
+        row_reasons.insert(0, f"CRITICAL: Event is part of a detected {chain_name} attack chain.")
         
     if not row_reasons:
         row_reasons.append("Anomalous baseline deviation detected.")
