@@ -133,7 +133,9 @@ print(f"Chain Linker detected {chain_hits} distinct multi-step attack chains.")
 # We only want to run SHAP on the events we are actually going to flag to the analyst
 threshold = np.percentile(events_df['anomaly_score'], 99) 
 print(f"Applying strict 99th percentile anomaly threshold (score >= {threshold:.4f}) OR Chain OR High Confidence Attack...")
-mask = (events_df['anomaly_score'] >= threshold) | (events_df['chain_involved'] == True) | ((events_df['predicted_attack_class'] != 'normal') & (events_df['attack_confidence'] > 0.85))
+
+is_high_conf_attack = (~events_df['predicted_attack_class'].isin(['normal', 'insider_drift'])) & (events_df['attack_confidence'] > 0.85)
+mask = (events_df['anomaly_score'] >= threshold) | (events_df['chain_involved'] == True) | is_high_conf_attack
 alerts_df = events_df[mask].copy().reset_index(drop=True)
 
 print(f"Generating Explanations for {len(alerts_df)} Alerts using SHAP...")

@@ -54,12 +54,28 @@ def load_and_merge_feedback():
     print(f"Applied {fp_mask.sum()} False Positive corrections and {tp_mask.sum()} True Positive confirmations.")
     return events_df, True
 
+REAL_CITIES = {
+    'New York': (40.7128, -74.0060),
+    'London': (51.5074, -0.1278),
+    'Tokyo': (35.6762, 139.6503),
+    'Sydney': (-33.8688, 151.2093),
+    'Moscow': (55.7558, 37.6173),
+    'Beijing': (39.9042, 116.4074),
+    'Mumbai': (19.0760, 72.8777),
+    'Cairo': (30.0444, 31.2357),
+    'Sao Paulo': (-23.5505, -46.6333),
+    'Paris': (48.8566, 2.3522),
+    'Berlin': (52.5200, 13.4050),
+    'Toronto': (43.6510, -79.3470),
+    'Dubai': (25.2048, 55.2708),
+    'Singapore': (1.3521, 103.8198),
+    'Johannesburg': (-26.2041, 28.0473),
+    'DataCenter-US': (37.7749, -122.4194)
+}
+
 def get_coords(city):
     if pd.isna(city): return 0.0, 0.0
-    h = int(hashlib.md5(str(city).encode('utf-8')).hexdigest(), 16)
-    lat = -90 + (h % 18000) / 100.0
-    lon = -180 + ((h // 18000) % 36000) / 100.0
-    return lat, lon
+    return REAL_CITIES.get(str(city), (0.0, 0.0))
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
@@ -202,7 +218,7 @@ def main():
     
     # 3. Train CANDIDATE Models
     print("Training candidate Isolation Forest on refreshed normal data...")
-    X_train_baseline = train_df[train_df['label'] == 'normal'][feature_cols]
+    X_train_baseline = train_df[train_df['label'].isin(['normal', 'insider_drift'])][feature_cols]
     cand_iso = IsolationForest(n_estimators=100, contamination=0.02, random_state=42)
     cand_iso.fit(X_train_baseline)
     

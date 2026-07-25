@@ -42,11 +42,27 @@ events_df['day_of_week'] = events_df['timestamp'].dt.dayofweek
 # We need a numeric representation for categorical variables to calculate rolling stats or hashes
 events_df['device_str'] = events_df['device_fingerprint'].fillna('unknown')
 
+REAL_CITIES = {
+    'New York': (40.7128, -74.0060),
+    'London': (51.5074, -0.1278),
+    'Tokyo': (35.6762, 139.6503),
+    'Sydney': (-33.8688, 151.2093),
+    'Moscow': (55.7558, 37.6173),
+    'Beijing': (39.9042, 116.4074),
+    'Mumbai': (19.0760, 72.8777),
+    'Cairo': (30.0444, 31.2357),
+    'Sao Paulo': (-23.5505, -46.6333),
+    'Paris': (48.8566, 2.3522),
+    'Berlin': (52.5200, 13.4050),
+    'Toronto': (43.6510, -79.3470),
+    'Dubai': (25.2048, 55.2708),
+    'Singapore': (1.3521, 103.8198),
+    'Johannesburg': (-26.2041, 28.0473),
+    'DataCenter-US': (37.7749, -122.4194)
+}
+
 def get_coords(city):
-    h = int(hashlib.md5(city.encode('utf-8')).hexdigest(), 16)
-    lat = -90 + (h % 18000) / 100.0
-    lon = -180 + ((h // 18000) % 36000) / 100.0
-    return lat, lon
+    return REAL_CITIES.get(str(city), (0.0, 0.0))
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0 # Earth radius in km
@@ -137,8 +153,8 @@ print("Training Isolation Forest...")
 feature_cols = ['hour_deviation', 'session_duration_zscore', 'is_new_device', 'is_new_geo', 
                 'geo_velocity', 'recent_failed_auth_count', 'has_privileged_command']
 
-# Train Isolation Forest only on 'normal' data to establish the pure baseline
-X_baseline = events_df[events_df['label'] == 'normal'][feature_cols]
+# Train Isolation Forest only on 'normal' and 'insider_drift' data to establish the pure baseline
+X_baseline = events_df[events_df['label'].isin(['normal', 'insider_drift'])][feature_cols]
 iso_forest = IsolationForest(n_estimators=100, contamination=0.02, random_state=42)
 iso_forest.fit(X_baseline)
 

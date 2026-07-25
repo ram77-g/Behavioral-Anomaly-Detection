@@ -62,6 +62,7 @@ MITRE_MAPPING = {
     'lateral_movement': {'id': 'T1021', 'tactic': 'Lateral Movement'},
     'device_spoofing': {'id': 'T1036', 'tactic': 'Defense Evasion'},
     'chain_credential_compromise': {'id': 'T1078 -> T1567', 'tactic': 'Initial Access -> Exfiltration'},
+    'insider_drift': {'id': 'T1078.004', 'tactic': 'Monitor - Valid Accounts'},
     'normal': {'id': 'None', 'tactic': 'None'}
 }
 
@@ -72,25 +73,34 @@ ACTION_RECOMMENDATIONS = {
     'lateral_movement': 'Isolate host, revoke temporary session tokens.',
     'device_spoofing': 'Require re-authentication and device registration.',
     'chain_credential_compromise': 'CRITICAL: Lock account immediately, initiate Incident Response.',
+    'insider_drift': 'Monitor user footprint for legitimate role changes.',
     'normal': 'No action required.'
 }
 
 # 2. Adaptive Risk Scoring
 def calculate_risk_score(row):
     score = 0
-    score += min(max(row.get('anomaly_score', 0) * 15, 0), 20)
     
-    # Baseline for confident attacks
-    if row.get('predicted_attack_class', 'normal') != 'normal':
-        if row.get('attack_confidence', 0) > 0.8: 
-            score += 45
-        else:
-            score += 25
+    # 1. Anomaly component (up to ~25 points)
+    # The anomaly score generally ranges from ~0.35 (normal) to 0.85 (highly anomalous).
+    anomaly_val = max(row.get('anomaly_score', 0.35) - 0.35, 0)
+    score += min(anomaly_val * 50, 25)
+    
+    # 2. ML Classification component (up to ~45 points)
+    if row.get('predicted_attack_class', 'normal') not in ['normal', 'insider_drift']:
+        conf = row.get('attack_confidence', 0)
+        # Use the raw probability to scale the score continuously
+        score += (conf * 45)
             
-    if row.get('chain_involved', False): score += 35
-    if row.get('resource_accessed') in ['Payroll', 'Production_DB']: score += 20
-    if row.get('is_new_device', 0) == 1: score += 15
-    if row.get('is_new_geo', 0) == 1: score += 10
+    # 3. Contextual Risk Adders
+    if row.get('chain_involved', False): 
+        score += 20
+    if row.get('resource_accessed') in ['Payroll', 'Production_DB', 'AWS_Console']: 
+        score += 15
+    if row.get('is_new_device', 0) == 1: 
+        score += 10
+    if row.get('is_new_geo', 0) == 1: 
+        score += 10
         
     return min(int(score), 100)
 
