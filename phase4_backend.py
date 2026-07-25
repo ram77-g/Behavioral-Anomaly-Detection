@@ -185,60 +185,195 @@ def _fetch_alerts_data(table="alerts"):
 # ----------------------------------------
 # LIVE SIMULATION ENGINE (Integrated)
 # ----------------------------------------
+import random
+import joblib
+from datetime import datetime
+import shap
+from phase1_data_generator import SyntheticDataGenerator
+from phase2_core_ml import compute_rolling_features, feature_cols
+from phase3_chain_and_shap import detect_chains, CHAIN_PATTERNS
+
 sim_task = None
 sim_index = 0
 is_sim_running = False
 
-# Cache the dataframe so we don't load it repeatedly
-_sim_df_cache = None
+live_generator = None
+live_context_df = pd.DataFrame()
+iso_forest_model = None
+xgboost_model = None
+label_encoder = None
+shap_explainer = None
+historical_state = {}
 
-def get_sim_df():
-    global _sim_df_cache
-    if _sim_df_cache is None:
-        df = pd.read_csv('./data/final_alerts.csv')
-        mask = (df['predicted_attack_class'] != 'normal') | (df['chain_involved'] == True)
-        df = df[mask].copy().reset_index(drop=True)
-        df['is_consecutive_duplicate'] = (df['entity_id'] == df['entity_id'].shift()) & (df['predicted_attack_class'] == df['predicted_attack_class'].shift())
-        df = df[~df['is_consecutive_duplicate']].drop(columns=['is_consecutive_duplicate']).reset_index(drop=True)
-        _sim_df_cache = df
-    return _sim_df_cache
+def init_live_engine():
+    global live_generator, iso_forest_model, xgboost_model, label_encoder, shap_explainer, historical_state, live_context_df
+    if live_generator is not None:
+        return # already initialized
+        
+    print("Initializing True Live Simulation Engine...")
+    
+    # 1. Load ML Models
+    DATA_DIR = './data'
+    iso_forest_model = joblib.load(os.path.join(DATA_DIR, 'iso_forest.joblib'))
+    xgboost_model = joblib.load(os.path.join(DATA_DIR, 'xgboost.joblib'))
+    label_encoder = joblib.load(os.path.join(DATA_DIR, 'label_encoder.joblib'))
+    shap_explainer = shap.TreeExplainer(xgboost_model)
+    
+    # 2. Init Generator
+    live_generator = SyntheticDataGenerator(num_users=500, num_devices=50, days=30)
+    live_generator.generate_profiles() # Load profiles (fast)
+    
+    # 3. Load historical context for cold-start (geo/device uniqueness & continuous features)
+    events_hist = pd.read_csv(os.path.join(DATA_DIR, 'events.csv'))
+    historical_state['devices'] = set(events_hist['device_fingerprint'].fillna('unknown').unique())
+    historical_state['geos'] = set(events_hist['geo_location'].unique())
+    
+    events_hist['timestamp'] = pd.to_datetime(events_hist['timestamp'])
+    events_hist['hour'] = events_hist['timestamp'].dt.hour
+    
+    historical_state['duration_mean'] = events_hist.groupby('entity_id')['session_duration'].mean().to_dict()
+    historical_state['duration_std'] = events_hist.groupby('entity_id')['session_duration'].std().to_dict()
+    historical_state['hour_mean'] = events_hist.groupby('entity_id')['hour'].mean().to_dict()
+    
+    historical_state['global_duration_mean'] = events_hist['session_duration'].mean()
+    historical_state['global_duration_std'] = events_hist['session_duration'].std()
+    historical_state['global_hour_mean'] = events_hist['hour'].mean()
+    
+    # Seed context df with last ~200 events from history just to have rolling baselines
+    events_hist['timestamp'] = pd.to_datetime(events_hist['timestamp'])
+    live_context_df = events_hist.tail(200).copy()
 
 async def simulation_loop():
-    global sim_index, is_sim_running
+    global sim_index, is_sim_running, live_context_df
     try:
-        df = get_sim_df()
+        init_live_engine()
         
-        while is_sim_running and sim_index < len(df):
-            row = df.iloc[sim_index]
-            alert = row.to_dict()
+        while is_sim_running:
+            # 1. Generate new events
+            now = datetime.now()
+            new_events_df = live_generator.generate_live_events(num_events=random.randint(1, 3), current_timestamp=now)
             
-            risk_score = calculate_risk_score(alert)
-            attack_type = alert['predicted_attack_class'] if not alert['chain_involved'] else 'chain_credential_compromise'
-            mapping = MITRE_MAPPING.get(attack_type, MITRE_MAPPING['normal'])
+            # 2. Merge with context for rolling features
+            new_events_df['is_new_event'] = True
+            live_context_df['is_new_event'] = False
+            merged_df = pd.concat([live_context_df, new_events_df], ignore_index=True)
             
-            enriched_df = pd.DataFrame([{
-                **alert,
-                'id': sim_index + 1,
-                'adaptive_risk_score': risk_score,
-                'mitre_mapping_id': mapping['id'],
-                'mitre_mapping_tactic': mapping['tactic'],
-                'recommendation': ACTION_RECOMMENDATIONS.get(attack_type, 'Investigate further.'),
-                'status': 'Open',
-                'analyst_notes': ''
-            }])
+            # 3. Compute Features (Note: this sorts by entity_id)
+            featured_df = compute_rolling_features(merged_df.copy())
             
-            # Insert into live_alerts
-            enriched_df.to_sql('live_alerts', engine, if_exists='append', index=False)
+            # Extract just the newly generated rows using the marker
+            current_batch = featured_df[featured_df['is_new_event'] == True].copy()
             
-            # Broadcast via websocket
-            await manager_live.broadcast(_fetch_alerts_data("live_alerts"))
+            # Fix cold-start uniqueness utilizing historical baseline
+            current_batch['is_new_device'] = current_batch['device_str'].apply(lambda x: 0 if x in historical_state['devices'] else 1)
+            current_batch['is_new_geo'] = current_batch['geo_location'].apply(lambda x: 0 if x in historical_state['geos'] else 1)
             
-            sim_index += 1
-            await asyncio.sleep(3.0)
+            # Patch continuous feature baselines utilizing full historical baseline instead of 200-row context
+            def get_zscore(row):
+                eid = row['entity_id']
+                mean = historical_state['duration_mean'].get(eid, historical_state['global_duration_mean'])
+                std = historical_state['duration_std'].get(eid, historical_state['global_duration_std'])
+                std = max(std if pd.notna(std) else 1.0, 1.0)
+                return (row['session_duration'] - mean) / std
+                
+            def get_hour_dev(row):
+                eid = row['entity_id']
+                mean_hr = historical_state['hour_mean'].get(eid, historical_state['global_hour_mean'])
+                hr = pd.to_datetime(row['timestamp']).hour
+                return abs(hr - mean_hr)
+                
+            current_batch['session_duration_zscore'] = current_batch.apply(get_zscore, axis=1)
+            current_batch['hour_deviation'] = current_batch.apply(get_hour_dev, axis=1)
+            
+            # Update historical sets
+            historical_state['devices'].update(current_batch['device_str'])
+            historical_state['geos'].update(current_batch['geo_location'])
+            
+            # 4. ML Scoring
+            X_batch = current_batch[feature_cols]
+            
+            # Anomaly Score
+            current_batch['anomaly_score'] = -iso_forest_model.score_samples(X_batch)
+            
+            # XGBoost Classification
+            probs = xgboost_model.predict_proba(X_batch)
+            current_batch['predicted_attack_class'] = label_encoder.inverse_transform(np.argmax(probs, axis=1))
+            current_batch['attack_confidence'] = np.max(probs, axis=1)
+            
+            # 5. Chain Linking (Check if these new events complete a chain)
+            detect_chains(featured_df, CHAIN_PATTERNS) # mutates featured_df
+            
+            # Map the chain results back to current_batch
+            current_batch['chain_involved'] = featured_df[featured_df['is_new_event'] == True]['chain_involved'].values
+            current_batch['chain_type'] = featured_df[featured_df['is_new_event'] == True]['chain_type'].values
+            
+            # 6. Filtering & SHAP
+            threshold = 0.75 # Default threshold if percentile fails
+            if 'anomaly_score' in live_context_df.columns:
+                threshold = np.percentile(live_context_df['anomaly_score'].dropna(), 99)
+                
+            is_high_conf = (~current_batch['predicted_attack_class'].isin(['normal', 'insider_drift'])) & (current_batch['attack_confidence'] > 0.85)
+            mask = (current_batch['anomaly_score'] >= threshold) | (current_batch['chain_involved'] == True) | is_high_conf
+            
+            alerts = current_batch[mask].copy()
+            
+            if len(alerts) > 0:
+                print(f"Generated {len(new_events_df)} events. {len(alerts)} alerts detected.")
+                # Generate SHAP reasons
+                shap_values = shap_explainer.shap_values(alerts[feature_cols])
+                reasons = []
+                for i in range(len(alerts)):
+                    row_reasons = []
+                    if pd.notna(alerts.iloc[i]['chain_involved']) and alerts.iloc[i]['chain_involved']:
+                        row_reasons.append(f"CRITICAL: Part of {alerts.iloc[i]['chain_type']} chain")
+                        
+                    pred_class_idx = np.where(label_encoder.classes_ == alerts.iloc[i]['predicted_attack_class'])[0][0]
+                    row_shap = shap_values[pred_class_idx][i] if isinstance(shap_values, list) else shap_values[i, :, pred_class_idx] if len(shap_values.shape)==3 else shap_values[i]
+                    
+                    top_idx = np.argmax(row_shap)
+                    if row_shap[top_idx] > 0:
+                        row_reasons.append(f"Anomalous {feature_cols[top_idx]}")
+                    reasons.append(" | ".join(row_reasons) if row_reasons else "Anomalous baseline deviation")
+                
+                alerts['reasons'] = reasons
+                
+                # Push alerts to DB & UI
+                for _, row in alerts.iterrows():
+                    alert_dict = row.to_dict()
+                    
+                    if 'is_new_event' in alert_dict:
+                        del alert_dict['is_new_event']
+                        
+                    risk_score = calculate_risk_score(alert_dict)
+                    attack_type = alert_dict['predicted_attack_class'] if not alert_dict.get('chain_involved') else 'chain_credential_compromise'
+                    mapping = MITRE_MAPPING.get(attack_type, MITRE_MAPPING['normal'])
+                    
+                    sim_index += 1
+                    enriched_df = pd.DataFrame([{
+                        **alert_dict,
+                        'id': sim_index,
+                        'adaptive_risk_score': risk_score,
+                        'mitre_mapping_id': mapping['id'],
+                        'mitre_mapping_tactic': mapping['tactic'],
+                        'recommendation': ACTION_RECOMMENDATIONS.get(attack_type, 'Investigate further.'),
+                        'status': 'Open',
+                        'analyst_notes': ''
+                    }])
+                    
+                    enriched_df.to_sql('live_alerts', engine, if_exists='append', index=False)
+                    await manager_live.broadcast(_fetch_alerts_data("live_alerts"))
+            
+            # 7. Prune context window to prevent memory leak
+            # Must sort by timestamp because compute_rolling_features leaves the df sorted by entity_id!
+            live_context_df = featured_df.sort_values('timestamp').tail(200).copy()
+            
+            await asyncio.sleep(2.0)
     except asyncio.CancelledError:
         print("Simulation task cancelled gracefully.")
     except Exception as e:
         print(f"Simulation task crashed: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         is_sim_running = False
 

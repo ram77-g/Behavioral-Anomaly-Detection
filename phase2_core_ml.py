@@ -35,13 +35,6 @@ events_df = events_df.sort_values(by=['entity_id', 'timestamp']).reset_index(dro
 # 2. Feature Engineering (Temporal, Rolling, Cold-Start)
 print("Engineering features...")
 
-# Extract basic time features
-events_df['hour'] = events_df['timestamp'].dt.hour
-events_df['day_of_week'] = events_df['timestamp'].dt.dayofweek
-
-# We need a numeric representation for categorical variables to calculate rolling stats or hashes
-events_df['device_str'] = events_df['device_fingerprint'].fillna('unknown')
-
 REAL_CITIES = {
     'New York': (40.7128, -74.0060),
     'London': (51.5074, -0.1278),
@@ -74,6 +67,11 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * c
 
 def compute_rolling_features(df):
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df['hour'] = df['timestamp'].dt.hour
+    df['day_of_week'] = df['timestamp'].dt.dayofweek
+    df['device_str'] = df.get('device_fingerprint', pd.Series(['unknown']*len(df))).fillna('unknown')
+
     # 1. Geo Velocity
     coords = df['geo_location'].apply(lambda x: get_coords(str(x)))
     df['lat'] = [c[0] for c in coords]
@@ -137,76 +135,102 @@ def compute_rolling_features(df):
     
     return df
 
-events_df = compute_rolling_features(events_df)
+    return df
 
-# Cold Start & Concept Drift Handling
-# Fill NaNs for new entities with Peer-Group Averages (by entity_type)
-peer_group_means = events_df.groupby('entity_type')[['session_duration_zscore', 'hour_deviation']].transform('mean')
-events_df['session_duration_zscore'] = events_df['session_duration_zscore'].fillna(peer_group_means['session_duration_zscore']).fillna(0)
-events_df['hour_deviation'] = events_df['hour_deviation'].fillna(peer_group_means['hour_deviation']).fillna(0)
+    return df
 
-# Concept Drift: The rolling windows above inherently handle drift because they only look at the last 30 days.
-# As behavior changes, the rolling mean adapts, and the deviation drops back to 0 over time.
-
-# 3. Model 1: Isolation Forest (Anomaly Scoring)
-print("Training Isolation Forest...")
 feature_cols = ['hour_deviation', 'session_duration_zscore', 'is_new_device', 'is_new_geo', 
                 'geo_velocity', 'recent_failed_auth_count', 'has_privileged_command']
 
-# Train Isolation Forest only on 'normal' and 'insider_drift' data to establish the pure baseline
-X_baseline = events_df[events_df['label'].isin(['normal', 'insider_drift'])][feature_cols]
-iso_forest = IsolationForest(n_estimators=100, contamination=0.02, random_state=42)
-iso_forest.fit(X_baseline)
+if __name__ == '__main__':
+    events_df = compute_rolling_features(events_df)
+    
+    # Cold Start & Concept Drift Handling
+    # Fill NaNs for new entities with Peer-Group Averages (by entity_type)
+    peer_group_means = events_df.groupby('entity_type')[['session_duration_zscore', 'hour_deviation']].transform('mean')
+    events_df['session_duration_zscore'] = events_df['session_duration_zscore'].fillna(peer_group_means['session_duration_zscore']).fillna(0)
+    events_df['hour_deviation'] = events_df['hour_deviation'].fillna(peer_group_means['hour_deviation']).fillna(0)
 
-# Score all events (negative scores are anomalies)
-# We invert it so higher score = more anomalous
-events_df['anomaly_score'] = -iso_forest.score_samples(events_df[feature_cols])
+    # Concept Drift: The rolling windows above inherently handle drift because they only look at the last 30 days.
+    # As behavior changes, the rolling mean adapts, and the deviation drops back to 0 over time.
 
-# 4. Model 2: XGBoost (Attack Classification)
-print("Training XGBoost Classifier...")
-# We train the classifier on events that are actual attacks, plus a sample of normal events.
-# XGBoost will learn to distinguish between attack types based on features.
+    # 3. Model 1: Isolation Forest (Anomaly Scoring)
+    print("Training Isolation Forest...")
+    
+    # Train Isolation Forest only on 'normal' and 'insider_drift' data to establish the pure baseline
+    X_baseline = events_df[events_df['label'].isin(['normal', 'insider_drift'])][feature_cols]
+    iso_forest = IsolationForest(n_estimators=100, contamination=0.02, random_state=42)
+    iso_forest.fit(X_baseline)
 
-# Prepare Labels
-le = LabelEncoder()
-events_df['target'] = le.fit_transform(events_df['label'])
+    # Score all events (negative scores are anomalies)
+    # We invert it so higher score = more anomalous
+    events_df['anomaly_score'] = -iso_forest.score_samples(events_df[feature_cols])
 
-X_clf = events_df[feature_cols]
-y_clf = events_df['target']
+    # 4. Model 2: XGBoost (Attack Classification)
+    print("Training XGBoost Classifier...")
+    # We train the classifier on events that are actual attacks, plus a sample of normal events.
+    # XGBoost will learn to distinguish between attack types based on features.
 
-X_train, X_test, y_train, y_test = train_test_split(X_clf, y_clf, test_size=0.2, stratify=y_clf, random_state=42)
+    # Prepare Labels
+    le = LabelEncoder()
+    events_df['target'] = le.fit_transform(events_df['label'])
 
-xgb_model = xgb.XGBClassifier(
-    objective='multi:softprob',
-    num_class=len(le.classes_),
-    eval_metric='mlogloss',
-    use_label_encoder=False,
-    random_state=42
-)
-weights = compute_sample_weight(class_weight='balanced', y=y_train)
-xgb_model.fit(X_train, y_train, sample_weight=weights)
+    X_clf = events_df[feature_cols]
+    y_clf = events_df['target']
 
-print("\n--- XGBoost Test Set Evaluation ---")
-y_pred_test = xgb_model.predict(X_test)
-print(classification_report(y_test, y_pred_test, target_names=le.classes_))
+    X_train, X_test, y_train, y_test = train_test_split(X_clf, y_clf, test_size=0.2, stratify=y_clf, random_state=42)
 
-# Predict probabilities
-probs = xgb_model.predict_proba(X_clf)
-events_df['predicted_attack_class'] = le.inverse_transform(np.argmax(probs, axis=1))
-events_df['attack_confidence'] = np.max(probs, axis=1)
+    xgb_model = xgb.XGBClassifier(
+        objective='multi:softprob',
+        num_class=len(le.classes_),
+        eval_metric='mlogloss',
+        use_label_encoder=False,
+        random_state=42
+    )
+    weights = compute_sample_weight(class_weight='balanced', y=y_train)
+    xgb_model.fit(X_train, y_train, sample_weight=weights)
 
-# 5. Save Artifacts for next phases
-print("Saving models and scored dataset...")
-events_df.to_csv(os.path.join(DATA_DIR, 'scored_events.csv'), index=False)
-joblib.dump(iso_forest, os.path.join(DATA_DIR, 'iso_forest.joblib'))
-joblib.dump(xgb_model, os.path.join(DATA_DIR, 'xgboost.joblib'))
-joblib.dump(le, os.path.join(DATA_DIR, 'label_encoder.joblib'))
+    print("\n--- XGBoost Test Set Evaluation ---")
+    y_pred_test = xgb_model.predict(X_test)
+    print(classification_report(y_test, y_pred_test, target_names=le.classes_))
 
-print("\n=== PHASE 2 COMPLETE ===")
-print("Generated Features: ", feature_cols)
-print("Models saved successfully.")
+    # Predict probabilities
+    probs = xgb_model.predict_proba(X_clf)
+    events_df['predicted_attack_class'] = le.inverse_transform(np.argmax(probs, axis=1))
+    events_df['attack_confidence'] = np.max(probs, axis=1)
 
-# Quick Evaluation Metric for Analyst
-flagged = events_df[events_df['anomaly_score'] > np.percentile(events_df['anomaly_score'], 95)]
-print("\nTop 5% Anomalous Events (Isolation Forest) captured the following true labels:")
-print(flagged['label'].value_counts())
+    # 5. Save Artifacts for next phases
+    print("Saving models and scored dataset...")
+    events_df.to_csv(os.path.join(DATA_DIR, 'scored_events.csv'), index=False)
+    joblib.dump(iso_forest, os.path.join(DATA_DIR, 'iso_forest.joblib'))
+    joblib.dump(xgb_model, os.path.join(DATA_DIR, 'xgboost.joblib'))
+    joblib.dump(le, os.path.join(DATA_DIR, 'label_encoder.joblib'))
+
+    print("\n=== PHASE 2 COMPLETE ===")
+    print("Generated Features: ", feature_cols)
+    print("Models saved successfully.")
+
+    # Quick Evaluation Metric for Analyst
+    flagged = events_df[events_df['anomaly_score'] > np.percentile(events_df['anomaly_score'], 95)]
+    print("\nTop 5% Anomalous Events (Isolation Forest) captured the following true labels:")
+    print(flagged['label'].value_counts())
+
+    # Strict 1% Alert Budget Evaluation (As requested by Evaluation Criteria)
+    top_1_percent_threshold = np.percentile(events_df['anomaly_score'], 99)
+    top_1_percent_events = events_df[events_df['anomaly_score'] >= top_1_percent_threshold]
+
+    # In the top 1%, how many were actually normal (False Positives)?
+    # 'insider_drift' is also technically normal/legitimate for this baseline.
+    false_positives = top_1_percent_events[top_1_percent_events['label'].isin(['normal', 'insider_drift'])]
+    true_positives = top_1_percent_events[~top_1_percent_events['label'].isin(['normal', 'insider_drift'])]
+
+    total_normal_events = len(events_df[events_df['label'].isin(['normal', 'insider_drift'])])
+    false_positive_rate = len(false_positives) / total_normal_events if total_normal_events > 0 else 0
+    precision_at_1_percent = len(true_positives) / len(top_1_percent_events) if len(top_1_percent_events) > 0 else 0
+
+    print("\n--- EVALUATION CRITERIA: Analyst Alert Budget (Top 1%) ---")
+    print(f"Total events in top 1%: {len(top_1_percent_events)}")
+    print(f"True Positives (Attacks caught in top 1%): {len(true_positives)}")
+    print(f"False Positives (Normal events flagged in top 1%): {len(false_positives)}")
+    print(f"Precision @ Top 1%: {precision_at_1_percent:.4f} ({precision_at_1_percent*100:.2f}%)")
+    print(f"False Positive Rate @ Top 1%: {false_positive_rate:.6f} ({false_positive_rate*100:.4f}%)")

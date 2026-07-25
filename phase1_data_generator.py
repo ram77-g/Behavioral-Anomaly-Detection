@@ -58,6 +58,7 @@ class SyntheticDataGenerator:
         self.start_date = datetime.now() - timedelta(days=days)
         self.profiles = {}
         self.events = []
+        self.pending_live_chain_events = []
         
         self.resources = ['GitHub', 'Jira', 'Internal_Wiki', 'Payroll', 'AWS_Console', 'VPN', 'Production_DB']
 
@@ -221,33 +222,120 @@ class SyntheticDataGenerator:
                 self._add_event(ts, eid, 'user', ip, self.profiles[eid]['usual_geo'], new_res, 'token', abs(np.random.normal(120, 20)), [], self.profiles[eid]['usual_device'], 'insider_drift')
                 day_offset += random.randint(5, 7)
 
-# 3. Generate & Save Data
-print("Generating synthetic data profiles & normal events...")
-generator = SyntheticDataGenerator(num_users=500, num_devices=50, days=30)
-generator.generate_profiles()
-generator.generate_normal_data()
+    def generate_live_events(self, num_events=3, current_timestamp=None):
+        if not self.profiles:
+            self.generate_profiles()
+            
+        if current_timestamp is None:
+            current_timestamp = datetime.now()
+            
+        users = [e for e, p in self.profiles.items() if p['entity_type'] == 'user']
+        
+        self.events = [] # Clear events for this live batch
+        
+        for _ in range(num_events):
+            # 1. Prioritize popping from the pending chain queue
+            if len(self.pending_live_chain_events) > 0:
+                event = self.pending_live_chain_events.pop(0)
+                event['timestamp'] = current_timestamp # Ensure it uses current time
+                self.events.append(event)
+                current_timestamp += timedelta(seconds=1)
+                continue
+                
+            is_attack = random.random() < 0.05 # 5% chance of an attack pattern
+            
+            if not is_attack:
+                eid = random.choice(list(self.profiles.keys()))
+                prof = self.profiles[eid]
+                is_noisy = random.random() < 0.10
+                if is_noisy and prof['entity_type'] == 'user':
+                    ip = f"{random.randint(1,255)}.{random.randint(1,255)}.x.x"
+                    res = random.choice(self.resources)
+                    geo = prof['usual_geo'] if random.random() < 0.8 else random.choice(list(REAL_CITIES.keys()))
+                else:
+                    ip = f"{prof['usual_ip_prefix']}.{random.randint(0,255)}.{random.randint(0,255)}"
+                    res = random.choice(prof['usual_resources'])
+                    geo = prof['usual_geo']
+                
+                self._add_event(
+                    current_timestamp, eid, prof['entity_type'], ip, geo, res, 
+                    'token' if prof['entity_type'] == 'user' else 'certificate',
+                    abs(np.random.normal(120, 30)), [], prof['usual_device'], 'normal'
+                )
+            else:
+                attack_type = random.choice(['brute_force', 'impossible_travel', 'credential_stuffing', 'lateral_movement', 'device_spoofing', 'chain_credential_compromise'])
+                eid = random.choice(users)
+                if attack_type == 'chain_credential_compromise':
+                    # Instead of executing all at once, queue them up for future ticks
+                    bad_ip = f"{random.randint(1,255)}.{random.randint(1,255)}.x.x"
+                    bad_dev = {'os': 'Kali Linux', 'browser': 'curl'}
+                    
+                    self._add_event(current_timestamp, eid, 'user', bad_ip, 'Remote_Geo', 'VPN', 'password', abs(np.random.normal(10, 5)), [], bad_dev, 'chain_credential_compromise')
+                    
+                    self.pending_live_chain_events.append({
+                        'entity_id': eid, 'entity_type': 'user', 'timestamp': current_timestamp,
+                        'source_ip': bad_ip, 'geo_location': 'Remote_Geo', 'resource_accessed': 'Account_Settings',
+                        'auth_method': 'password', 'session_duration': abs(np.random.normal(15, 5)),
+                        'command_sequence': json.dumps(['reset_password']), 'device_fingerprint': json.dumps(bad_dev),
+                        'label': 'chain_credential_compromise'
+                    })
+                    
+                    self.pending_live_chain_events.append({
+                        'entity_id': eid, 'entity_type': 'user', 'timestamp': current_timestamp,
+                        'source_ip': bad_ip, 'geo_location': 'Remote_Geo', 'resource_accessed': 'Payroll',
+                        'auth_method': 'password', 'session_duration': abs(np.random.normal(5000, 500)),
+                        'command_sequence': json.dumps(['export_all_data']), 'device_fingerprint': json.dumps(bad_dev),
+                        'label': 'chain_credential_compromise'
+                    })
+                elif attack_type == 'brute_force':
+                    ip = f"{random.randint(1,255)}.{random.randint(1,255)}.x.x"
+                    for _ in range(3): # Short burst for live
+                        self._add_event(current_timestamp, eid, 'user', ip, 'Unknown', 'VPN', 'password', 0.0, [], {}, 'brute_force')
+                        current_timestamp += timedelta(seconds=1)
+                    self._add_event(current_timestamp, eid, 'user', ip, 'Unknown', 'VPN', 'password', abs(np.random.normal(300, 50)), [], {}, 'brute_force')
+                elif attack_type == 'impossible_travel':
+                    city1, city2 = random.sample(list(REAL_CITIES.keys()), 2)
+                    self._add_event(current_timestamp, eid, 'user', f"{random.randint(1,255)}.{random.randint(1,255)}.x.x", city1, 'VPN', 'password', 150.0, [], {}, 'impossible_travel')
+                    self._add_event(current_timestamp + timedelta(minutes=10), eid, 'user', f"{random.randint(1,255)}.{random.randint(1,255)}.x.x", city2, 'AWS_Console', 'password', 300.0, [], {}, 'impossible_travel')
+                elif attack_type == 'credential_stuffing':
+                    self._add_event(current_timestamp, eid, 'user', '185.15.2.1', 'Unknown', 'VPN', 'password', 0.0, [], {}, 'credential_stuffing')
+                elif attack_type == 'lateral_movement':
+                    ip = f"10.0.{random.randint(1,255)}.{random.randint(1,255)}"
+                    self._add_event(current_timestamp, eid, 'user', ip, 'DataCenter-US', 'Production_DB', 'token', 600.0, ['SELECT *'], {}, 'lateral_movement')
+                elif attack_type == 'device_spoofing':
+                    bad_dev = {'os': 'Kali Linux', 'browser': 'curl/7.68.0'}
+                    self._add_event(current_timestamp, eid, 'user', f"{random.randint(1,255)}.{random.randint(1,255)}.x.x", 'Unknown', 'VPN', 'password', 150.0, [], bad_dev, 'device_spoofing')
+                    
+            current_timestamp += timedelta(seconds=1)
 
-print("Injecting complex attacks and attack chains...")
-generator.inject_attacks()
+        return pd.DataFrame(self.events)
+if __name__ == '__main__':
+    # 3. Generate & Save Data
+    print("Generating synthetic data profiles & normal events...")
+    generator = SyntheticDataGenerator(num_users=500, num_devices=50, days=30)
+    generator.generate_profiles()
+    generator.generate_normal_data()
 
-# Convert events to DataFrame
-df_events = pd.DataFrame(generator.events)
-df_events = df_events.sort_values('timestamp').reset_index(drop=True)
+    print("Injecting complex attacks and attack chains...")
+    generator.inject_attacks()
 
-# Prepare entities dataframe
-entities_list = [{'entity_id': eid, 'entity_type': prof['entity_type'], 'profile_data': json.dumps(prof)} for eid, prof in generator.profiles.items()]
-df_entities = pd.DataFrame(entities_list)
+    # Convert events to DataFrame
+    df_events = pd.DataFrame(generator.events)
+    df_events = df_events.sort_values('timestamp').reset_index(drop=True)
 
-# Save
-entities_path = os.path.join(DATA_DIR, 'entities.csv')
-events_path = os.path.join(DATA_DIR, 'events.csv')
-df_entities.to_csv(entities_path, index=False)
-df_events.to_csv(events_path, index=False)
+    # Prepare entities dataframe
+    entities_list = [{'entity_id': eid, 'entity_type': prof['entity_type'], 'profile_data': json.dumps(prof)} for eid, prof in generator.profiles.items()]
+    df_entities = pd.DataFrame(entities_list)
 
-print("\n=== PHASE 1 COMPLETE (REALISM PASS) ===")
-print(f"Total Entities: {len(df_entities)}")
-print(f"Total Events: {len(df_events)}")
-print("\nAnomaly Rate Distribution:")
-print((df_events['label'].value_counts(normalize=True) * 100).round(3))
-print("\nEvent Counts per Class:")
-print(df_events['label'].value_counts())
+    # Save
+    entities_path = os.path.join(DATA_DIR, 'entities.csv')
+    df_events.to_csv(os.path.join(DATA_DIR, 'events.csv'), index=False)
+    pd.DataFrame(list(generator.profiles.values())).to_csv(entities_path, index=False)
+
+    print("\n=== PHASE 1 COMPLETE (REALISM PASS) ===")
+    print(f"Total Entities: {len(df_entities)}")
+    print(f"Total Events: {len(df_events)}")
+    print("\nAnomaly Rate Distribution:")
+    print((df_events['label'].value_counts(normalize=True) * 100).round(3))
+    print("\nEvent Counts per Class:")
+    print(df_events['label'].value_counts())

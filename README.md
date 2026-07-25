@@ -21,6 +21,7 @@ To train our models, we engineered a highly realistic synthetic data generator t
 * **Baseline Profiling:** Generates 500 Users and 50 Devices, each with unique behavioral profiles and a dynamic dictionary of `REAL_CITIES` for deterministic geo-velocity tracking.
 * **Rigorous Attack Signatures:** Injects cyber attacks including Brute Force, Credential Stuffing, Impossible Travel, Lateral Movement, Device Spoofing, and Low-and-Slow Exfiltration. Target routing randomly compromises infrastructure edge devices alongside normal users.
 * **Mathematical Jitter & Drift:** Implements `np.random.normal()` statistical jitter across all attack durations and timestamps to ensure organically distributed ML probabilities. We also intentionally inject `insider_drift` (a legitimate, gradual footprint expansion) to force the unsupervised models to learn organic baseline shifts without throwing false positives.
+* **Live Chain Injection Queue:** Utilizes a stateful queue to deterministically orchestrate multi-step `chain_credential_compromise` attacks, pushing distinct steps (e.g. VPN Access -> Config Changes -> Data Exfiltration) sequentially across multiple continuous intervals rather than all at once.
 
 ### Phase 2: Core Machine Learning & Feature Engineering
 We transform raw logs into mathematical vectors to train our AI models.
@@ -35,7 +36,7 @@ We transform raw logs into mathematical vectors to train our AI models.
 The final alerts are served to a cutting-edge analyst dashboard powered by PostgreSQL.
 * **Dual Environment Backend:** The FastAPI backend securely segregates historical alerts from real-time live simulation streams using distinct database tables (`alerts` vs `live_alerts`) and dedicated WebSocket channels.
 * **Adaptive Risk Scoring:** A dynamic backend algorithm that calculates highly varied risk scores (0-100) by directly scaling the raw Isolation Forest anomaly offsets and multiplying the exact XGBoost prediction probabilities, avoiding static blocks of "fake-looking" data. Includes fallback MITRE mapping logic.
-* **Live Simulation Engine:** Features a native, built-in `asyncio` background task that simulates real-time attack data ingestion. It deduplicates log spam while flawlessly preserving tactical attack pivots.
+* **Live Simulation Engine:** Features a native, built-in `asyncio` background task that simulates real-time attack data ingestion. It has been extensively upgraded from a simple timer-playback to a **True Live Streaming Engine** that mathematically integrates fresh synthetic data into a sliding temporal context window. It perfectly handles live continuous feature derivation, cold-start baselines, and injects temporally distributed multi-step attack chains across distinct simulation ticks to accurately simulate a real adversary kill chain.
 * **Frontend UI:** Features a real-time dual-mode dashboard. Analysts can instantly toggle between static investigation and the live event stream. It includes a dynamic attack relationship network graph, historical risk trendlines, fully integrated start/pause/reset simulation controls, one-click PDF incident report generation, and a direct database feedback loop for continuous learning.
 
 ---
