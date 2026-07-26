@@ -168,8 +168,10 @@ if __name__ == '__main__':
     # XGBoost will learn to distinguish between attack types based on features.
 
     # Prepare Labels
+    # Treat insider_drift as 'normal' for the classifier, as it's legitimate behavior
+    events_df['clf_label'] = events_df['label'].replace('insider_drift', 'normal')
     le = LabelEncoder()
-    events_df['target'] = le.fit_transform(events_df['label'])
+    events_df['target'] = le.fit_transform(events_df['clf_label'])
 
     X_clf = events_df[feature_cols]
     y_clf = events_df['target']

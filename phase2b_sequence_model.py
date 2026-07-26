@@ -350,8 +350,10 @@ iso_forest_v2 = IsolationForest(n_estimators=100, contamination=0.02, random_sta
 iso_forest_v2.fit(X_baseline)
 events_df['anomaly_score_v2'] = -iso_forest_v2.score_samples(events_df[STACKED_FEATURE_COLS])
 
+# Treat insider_drift as 'normal' for the classifier
+events_df['clf_label'] = events_df['label'].replace('insider_drift', 'normal')
 label_encoder_v2 = LabelEncoder()
-events_df['target_v2'] = label_encoder_v2.fit_transform(events_df['label'])
+events_df['target_v2'] = label_encoder_v2.fit_transform(events_df['clf_label'])
 
 X_clf = events_df[STACKED_FEATURE_COLS]
 y_clf = events_df['target_v2']

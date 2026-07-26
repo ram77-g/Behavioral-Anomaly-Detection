@@ -160,12 +160,12 @@ class SyntheticDataGenerator:
                 self._add_event(ts, victim, 'user', bad_ip, 'Unknown', 'VPN', 'password', 0.0, [], {}, 'credential_stuffing')
                 ts += timedelta(seconds=random.randint(2, 6))
 
-        # 4. Lateral Movement (25 instances = 50 events)
-        for _ in range(25):
+        # 4. Lateral Movement (100 instances = 200 events)
+        for _ in range(100):
             eid = random.choice(users)
             ts = self.start_date + timedelta(days=random.randint(5, 25))
             ip = f"10.0.99.{random.randint(1,255)}" # Internal pivoted IP
-            self._add_event(ts, eid, 'user', ip, self.profiles[eid]['usual_geo'], 'GitHub', 'token', abs(np.random.normal(150, 30)), [], self.profiles[eid]['usual_device'], 'lateral_movement')
+            self._add_event(ts, eid, 'user', ip, self.profiles[eid]['usual_geo'], 'GitHub', 'token', abs(np.random.normal(150, 30)), ['assume_role'], self.profiles[eid]['usual_device'], 'lateral_movement')
             ts += timedelta(minutes=random.randint(5, 20))
             self._add_event(ts, eid, 'user', ip, self.profiles[eid]['usual_geo'], 'AWS_Console', 'password', abs(np.random.normal(500, 100)), ['assume_role', 'list_buckets'], self.profiles[eid]['usual_device'], 'lateral_movement')
             
