@@ -24,7 +24,9 @@ print(f"\n--- 99th Percentile Threshold ({len(alerts_99)} events) ---")
 print(classification_report(alerts_99['label'], alerts_99['predicted_attack_class']))
 
 # Tiered Alert Evaluation
-top_1_percent_threshold = np.percentile(events_df['anomaly_score'], 99)
+print("\nLoading full dataset to calculate true 99th percentile threshold...")
+full_df = pd.read_csv(os.path.join(DATA_DIR, 'scored_events.csv'))
+top_1_percent_threshold = np.percentile(full_df['anomaly_score'], 99)
 
 # Tier 1 (Strict 1% Budget)
 tier1_events = events_df[events_df['anomaly_score'] >= top_1_percent_threshold]
