@@ -176,7 +176,10 @@ if __name__ == '__main__':
 
     X_train, X_test, y_train, y_test = train_test_split(X_clf, y_clf, test_size=0.2, stratify=y_clf, random_state=42)
 
-    xgb_model = xgb.XGBClassifier(
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.frozen import FrozenEstimator
+    
+    base_xgb = xgb.XGBClassifier(
         objective='multi:softprob',
         num_class=len(le.classes_),
         eval_metric='mlogloss',
@@ -184,7 +187,11 @@ if __name__ == '__main__':
         random_state=42
     )
     weights = compute_sample_weight(class_weight='balanced', y=y_train)
-    xgb_model.fit(X_train, y_train, sample_weight=weights)
+    base_xgb.fit(X_train, y_train, sample_weight=weights)
+    
+    # Calibrate probabilities to the true unweighted prior using FrozenEstimator (sklearn 1.8+)
+    xgb_model = CalibratedClassifierCV(FrozenEstimator(base_xgb), method='sigmoid')
+    xgb_model.fit(X_train, y_train)
 
     print("\n--- XGBoost Test Set Evaluation ---")
     y_pred_test = xgb_model.predict(X_test)

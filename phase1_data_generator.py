@@ -234,8 +234,8 @@ class SyntheticDataGenerator:
         self.events = [] # Clear events for this live batch
         
         for _ in range(num_events):
-            # 1. Prioritize popping from the pending chain queue
-            if len(self.pending_live_chain_events) > 0:
+            # 1. Pop from pending chain queue periodically (interweave with normal traffic)
+            if len(self.pending_live_chain_events) > 0 and random.random() < 0.25:
                 event = self.pending_live_chain_events.pop(0)
                 event['timestamp'] = current_timestamp # Ensure it uses current time
                 self.events.append(event)

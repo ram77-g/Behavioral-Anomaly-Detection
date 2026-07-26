@@ -23,18 +23,33 @@ alerts_99 = events_df[mask_99]
 print(f"\n--- 99th Percentile Threshold ({len(alerts_99)} events) ---")
 print(classification_report(alerts_99['label'], alerts_99['predicted_attack_class']))
 
-# Strict 1% Alert Budget Evaluation (As requested by Evaluation Criteria)
-# This calculates exactly what the eval asks for: Precision at Top-1%-Alert-Budget
+# Tiered Alert Evaluation
 top_1_percent_threshold = np.percentile(events_df['anomaly_score'], 99)
-top_1_percent_events = events_df[events_df['anomaly_score'] >= top_1_percent_threshold]
 
-false_positives = top_1_percent_events[top_1_percent_events['label'].isin(['normal', 'insider_drift'])]
-true_positives = top_1_percent_events[~top_1_percent_events['label'].isin(['normal', 'insider_drift'])]
+# Tier 1 (Strict 1% Budget)
+tier1_events = events_df[events_df['anomaly_score'] >= top_1_percent_threshold]
+tier1_fp = tier1_events[tier1_events['label'].isin(['normal', 'insider_drift'])]
+tier1_tp = tier1_events[~tier1_events['label'].isin(['normal', 'insider_drift'])]
+tier1_precision = len(tier1_tp) / len(tier1_events) if len(tier1_events) > 0 else 0
 
-precision_at_1_percent = len(true_positives) / len(top_1_percent_events) if len(top_1_percent_events) > 0 else 0
+# Tier 2 (Safety Net: Caught by supervised logic/chains but below the 99th percentile anomaly threshold)
+tier2_mask = (events_df['anomaly_score'] < top_1_percent_threshold) & (
+    ((events_df['predicted_attack_class'] != 'normal') & (events_df['attack_confidence'] > 0.85)) | 
+    (events_df['chain_involved'] == True)
+)
+tier2_events = events_df[tier2_mask]
+tier2_fp = tier2_events[tier2_events['label'].isin(['normal', 'insider_drift'])]
+tier2_tp = tier2_events[~tier2_events['label'].isin(['normal', 'insider_drift'])]
+tier2_precision = len(tier2_tp) / len(tier2_events) if len(tier2_events) > 0 else 0
 
-print("\n--- EVALUATION CRITERIA: Analyst Alert Budget (Top 1%) ---")
-print(f"Total events in top 1%: {len(top_1_percent_events)}")
-print(f"True Positives (Attacks caught in top 1%): {len(true_positives)}")
-print(f"False Positives (Normal events flagged in top 1%): {len(false_positives)}")
-print(f"Precision @ Top 1% Alert Budget: {precision_at_1_percent:.4f} ({precision_at_1_percent*100:.2f}%)")
+print("\n--- TIER 1 ALERTS (Strict 1% Analyst Budget) ---")
+print(f"Total events in Tier 1: {len(tier1_events)}")
+print(f"True Positives: {len(tier1_tp)}")
+print(f"False Positives: {len(tier1_fp)}")
+print(f"Precision @ Tier 1: {tier1_precision:.4f} ({tier1_precision*100:.2f}%)")
+
+print("\n--- TIER 2 ALERTS (Safety Net via Chains & Supervised XGBoost) ---")
+print(f"Total events in Tier 2: {len(tier2_events)}")
+print(f"True Positives: {len(tier2_tp)}")
+print(f"False Positives: {len(tier2_fp)}")
+print(f"Precision @ Tier 2: {tier2_precision:.4f} ({tier2_precision*100:.2f}%)")

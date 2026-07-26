@@ -1,6 +1,6 @@
 # Honeywell SOC Assistant: AI-Powered Behavioral Anomaly Detection
 
-**Version:** v1.1 (Live Simulation Integrated)
+**Version:** v1.5 (Live Simulation Integrated)
 
 ## Application Description
 The Honeywell SOC Assistant is an AI-powered Cybersecurity Analyst Copilot designed to combat alert fatigue in modern Security Operations Centers. Unlike traditional SIEM systems that rely on static rules, this platform leverages Unsupervised and Supervised Machine Learning (Isolation Forest & XGBoost) to learn the unique behavioral baselines of network entities (users and edge devices) in real-time. It automatically detects anomalies, classifies cyber attacks with high precision, reconstructs complex multi-stage Kill Chains, and explains its exact reasoning using Explainable AI (SHAP) directly within an interactive React dashboard.
@@ -52,7 +52,7 @@ The Honeywell SOC Assistant is an AI-powered Cybersecurity Analyst Copilot desig
 ### 3. Machine Learning Pipeline Execution
 Our pipeline is designed to run 100% locally on your machine.
 1. Open a terminal in the root directory.
-2. Install Python dependencies: `pip install pandas numpy scikit-learn xgboost shap sqlalchemy psycopg2-binary fastapi uvicorn websockets python-dotenv`
+2. Install Python dependencies: `pip install pandas numpy scikit-learn xgboost shap sqlalchemy psycopg2-binary fastapi uvicorn websockets python-dotenv joblib requests`
 3. Run `python phase1_data_generator.py` to generate the foundational dataset (`data/events.csv`).
 4. Run `python phase2_core_ml.py` to engineer features and train the Isolation Forest and XGBoost models.
 5. Run `python phase3_chain_and_shap.py` to link temporal attack chains, generate SHAP explanations, and output the `data/final_alerts.csv`.

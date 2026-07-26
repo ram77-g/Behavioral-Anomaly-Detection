@@ -99,41 +99,38 @@ def detect_chains(events_df, chain_patterns):
             max_gap = pattern['max_gap_hours']
             name = pattern['name']
             
-            # Simple contiguous sliding window for POC
-            for i in range(len(idx_list) - n_steps + 1):
-                window_indices = idx_list[i : i + n_steps]
-                window_rows = [events_df.loc[idx] for idx in window_indices]
-                
-                # Check if steps match
-                matches = True
-                for step_idx in range(n_steps):
-                    if not match_step(window_rows[step_idx], steps[step_idx]):
-                        matches = False
-                        break
-                
-                if not matches:
+            # Greedy non-contiguous match allowing intermediate noise events
+            for start_idx_pos in range(len(idx_list)):
+                first_idx = idx_list[start_idx_pos]
+                if not match_step(events_df.loc[first_idx], steps[0]):
                     continue
                     
-                # Check time gaps
-                time_valid = True
-                # Check adjacent steps to ensure chronological progression without massive isolated gaps
-                for step_idx in range(n_steps - 1):
-                    diff = (window_rows[step_idx+1]['timestamp'] - window_rows[step_idx]['timestamp']).total_seconds() / 3600.0
-                    if diff > max_gap:
-                        time_valid = False
+                matched_indices = [first_idx]
+                current_step = 1
+                
+                for next_idx_pos in range(start_idx_pos + 1, len(idx_list)):
+                    if current_step >= n_steps:
                         break
                         
-                # Check total chain duration
-                if time_valid:
-                    total_diff = (window_rows[-1]['timestamp'] - window_rows[0]['timestamp']).total_seconds() / 3600.0
-                    if total_diff > max_gap:
-                        time_valid = False
+                    curr_idx = idx_list[next_idx_pos]
+                    prev_idx = matched_indices[-1]
+                    
+                    diff = (events_df.loc[curr_idx]['timestamp'] - events_df.loc[prev_idx]['timestamp']).total_seconds() / 3600.0
+                    if diff > max_gap:
+                        break # Time gap exceeded for this step
                         
-                if time_valid:
-                    for idx in window_indices:
-                        events_df.at[idx, 'chain_involved'] = True
-                        events_df.at[idx, 'chain_type'] = name
-                    chain_hits += 1
+                    if match_step(events_df.loc[curr_idx], steps[current_step]):
+                        matched_indices.append(curr_idx)
+                        current_step += 1
+                
+                if len(matched_indices) == n_steps:
+                    # Check total chain duration
+                    total_diff = (events_df.loc[matched_indices[-1]]['timestamp'] - events_df.loc[matched_indices[0]]['timestamp']).total_seconds() / 3600.0
+                    if total_diff <= max_gap:
+                        for idx in matched_indices:
+                            events_df.at[idx, 'chain_involved'] = True
+                            events_df.at[idx, 'chain_type'] = name
+                        chain_hits += 1
     return chain_hits
 
 if __name__ == '__main__':
@@ -154,7 +151,12 @@ if __name__ == '__main__':
 
     # 4. SHAP Integration
     # We use TreeExplainer for XGBoost
-    explainer = shap.TreeExplainer(xgb_model)
+    shap_base_xgb = xgb_model
+    if hasattr(xgb_model, "calibrated_classifiers_"):
+        base_est = xgb_model.calibrated_classifiers_[0].estimator
+        shap_base_xgb = getattr(base_est, "estimator", base_est)
+        
+    explainer = shap.TreeExplainer(shap_base_xgb)
     shap_values = explainer.shap_values(alerts_df[feature_cols])
 
     # Convert SHAP arrays to human-readable strings

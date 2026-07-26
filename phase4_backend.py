@@ -139,9 +139,14 @@ def init_db():
         
     df = pd.read_csv(DATA_FILE)
     
-    # Filter to only keep alerts (attacks or chain-involved)
-    mask = (df['predicted_attack_class'] != 'normal') | (df['chain_involved'] == True)
+    # Calculate threshold on full dataset
+    top_1_threshold = np.percentile(df['anomaly_score'], 99)
+    
+    # Filter to only keep alerts (Tier 1 strict budget OR Tier 2 safety net)
+    mask = (df['anomaly_score'] >= top_1_threshold) | (df['predicted_attack_class'] != 'normal') | (df['chain_involved'] == True)
     df = df[mask].copy()
+    
+    df['alert_tier'] = np.where(df['anomaly_score'] >= top_1_threshold, 'Tier 1 (Strict 1%)', 'Tier 2 (Safety Net)')
     
     # Fix NaN truthiness
     df['chain_involved'] = df['chain_involved'].fillna(False)
@@ -174,11 +179,14 @@ def init_db():
     df['status'] = 'Open'
     df['analyst_notes'] = ''
     
+    # Drop alert_tier before DB insertion to maintain schema consistency
+    db_df = df.drop(columns=['alert_tier'], errors='ignore')
+    
     # Write to PostgreSQL for Static DB
-    df.to_sql('alerts', engine, index=False)
+    db_df.to_sql('alerts', engine, index=False)
     
     # Create the live_alerts table by copying the schema but with 0 rows
-    df.iloc[0:0].to_sql('live_alerts', engine, if_exists='replace', index=False)
+    db_df.iloc[0:0].to_sql('live_alerts', engine, if_exists='replace', index=False)
     
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE alerts ADD PRIMARY KEY (id);"))
@@ -232,7 +240,16 @@ def init_live_engine():
     iso_forest_model = joblib.load(os.path.join(DATA_DIR, 'iso_forest.joblib'))
     xgboost_model = joblib.load(os.path.join(DATA_DIR, 'xgboost.joblib'))
     label_encoder = joblib.load(os.path.join(DATA_DIR, 'label_encoder.joblib'))
-    shap_explainer = shap.TreeExplainer(xgboost_model)
+    
+    # Explainability Engine
+    # Note: we use TreeExplainer for XGBoost which is extremely fast
+    # If XGBoost is wrapped in CalibratedClassifierCV, unwrap it for SHAP
+    shap_base_xgb = xgboost_model
+    if hasattr(xgboost_model, "calibrated_classifiers_"):
+        base_est = xgboost_model.calibrated_classifiers_[0].estimator
+        shap_base_xgb = getattr(base_est, "estimator", base_est)
+        
+    shap_explainer = shap.TreeExplainer(shap_base_xgb)
     
     # 2. Init Generator
     live_generator = SyntheticDataGenerator(num_users=500, num_devices=50, days=30)
@@ -328,6 +345,18 @@ async def simulation_loop():
             historical_state['devices'].update(current_batch['device_str'])
             historical_state['geos'].update(current_batch['geo_location'])
             
+            # Update continuous baselines via Exponential Moving Average to allow Concept Drift adaptation
+            alpha = 0.1
+            for _, row in current_batch.iterrows():
+                eid = row['entity_id']
+                if eid in historical_state['duration_mean']:
+                    historical_state['duration_mean'][eid] = (1 - alpha) * historical_state['duration_mean'][eid] + alpha * row['session_duration']
+                    historical_state['hour_mean'][eid] = (1 - alpha) * historical_state['hour_mean'][eid] + alpha * pd.to_datetime(row['timestamp']).hour
+                else:
+                    historical_state['duration_mean'][eid] = row['session_duration']
+                    historical_state['duration_std'][eid] = 1.0
+                    historical_state['hour_mean'][eid] = pd.to_datetime(row['timestamp']).hour
+            
             # 4. ML Scoring (Classification)
             X_batch = current_batch[feature_cols]
             
@@ -348,14 +377,18 @@ async def simulation_loop():
             threshold = 0.75 # Default threshold if percentile fails
             if 'anomaly_score' in live_context_df.columns:
                 threshold = np.percentile(live_context_df['anomaly_score'].dropna(), 99)
-                
-            is_high_conf = (~current_batch['predicted_attack_class'].isin(['normal', 'insider_drift'])) & (current_batch['attack_confidence'] > 0.85)
-            mask = (current_batch['anomaly_score'] >= threshold) | (current_batch['chain_involved'] == True) | is_high_conf
             
-            alerts = current_batch[mask].copy()
+            mask = (current_batch['anomaly_score'] >= threshold) | \
+                   ((current_batch['predicted_attack_class'] != 'normal') & (current_batch['attack_confidence'] > 0.85)) | \
+                   (current_batch['chain_involved'] == True)
+            
+            alerts_df = current_batch[mask].copy()
+            
+            if not alerts_df.empty:
+                alerts_df['alert_tier'] = np.where(alerts_df['anomaly_score'] >= threshold, 'Tier 1 (Strict)', 'Tier 2 (Safety Net)')
             
             # Deduplicate alerts in the same tick to prevent UI/DB spam from attack bursts
-            alerts = alerts.drop_duplicates(subset=['entity_id', 'predicted_attack_class'], keep='last').reset_index(drop=True)
+            alerts = alerts_df.drop_duplicates(subset=['entity_id', 'predicted_attack_class'], keep='last').reset_index(drop=True)
             
             if len(alerts) > 0:
                 print(f"Generated {len(new_events_df)} events. {len(alerts)} alerts detected.")
@@ -400,8 +433,12 @@ async def simulation_loop():
                         'analyst_notes': ''
                     }])
                     
+                    # Drop alert_tier before DB insertion to prevent schema mismatch on existing databases
+                    if 'alert_tier' in enriched_df.columns:
+                        enriched_df = enriched_df.drop(columns=['alert_tier'])
+                        
                     enriched_df.to_sql('live_alerts', engine, if_exists='append', index=False)
-                    await manager_live.broadcast(_fetch_alerts_data("live_alerts"))
+                    asyncio.create_task(manager_live.broadcast(_fetch_alerts_data("live_alerts")))
             
             # 7. Prune context window to prevent memory leak
             # Must sort by timestamp because compute_rolling_features leaves the df sorted by entity_id!
