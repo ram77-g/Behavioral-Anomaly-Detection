@@ -1,9 +1,9 @@
-# Honeywell SOC Assistant: AI-Powered Behavioral Anomaly Detection
+# Tracewell SOC Assistant: AI-Powered Behavioral Anomaly Detection
 
-**Version:** v1.6 (Live Simulation Integrated)
+**Version:** v2 (Live Simulation Integrated and Deep Learning Model integrated)
 
 ## Application Description
-The Honeywell SOC Assistant is an AI-powered Cybersecurity Analyst Copilot designed to combat alert fatigue in modern Security Operations Centers. Unlike traditional SIEM systems that rely on static rules, this platform leverages Unsupervised and Supervised Machine Learning (Isolation Forest & XGBoost) to learn the unique behavioral baselines of network entities (users and edge devices) in real-time. It automatically detects anomalies, classifies cyber attacks with high precision, reconstructs complex multi-stage Kill Chains, and explains its exact reasoning using Explainable AI (SHAP) directly within an interactive React dashboard.
+The Tracewell SOC Assistant is an AI-powered Cybersecurity Analyst Copilot designed to combat alert fatigue in modern Security Operations Centers. Unlike traditional SIEM systems that rely on static rules, this platform leverages Unsupervised and Supervised Machine Learning (Isolation Forest & XGBoost) to learn the unique behavioral baselines of network entities (users and edge devices) in real-time. It automatically detects anomalies, classifies cyber attacks with high precision, reconstructs complex multi-stage Kill Chains, and explains its exact reasoning using Explainable AI (SHAP) directly within an interactive React dashboard.
 
 ---
 
@@ -18,6 +18,7 @@ The Honeywell SOC Assistant is an AI-powered Cybersecurity Analyst Copilot desig
 
 ### Core Machine Learning
 - **Advanced Rolling Feature Engineering:** Transforms raw telemetry (duration, time, location) into complex sliding-window physical and network characteristics.
+- **Deep Learning Sequence Modeling (PyTorch GRU):** A stateful GRU neural network that processes chronological user events to predict the next action, outputting an Autoencoder-style prediction loss (`ae_error`) to catch subtle temporal anomalies.
 - **Isolation Forest (Anomaly Detection):** An unsupervised model deployed to isolate statistical outliers from normal baseline activity.
 - **XGBoost (Attack Classification):** A supervised model that ingests anomalies and predicts the exact class of cyber attack with granular probability confidence arrays.
 - **Cold-Start Handling:** New entities with no history are scored against peer-group behavioral baselines until enough personal history accumulates.
@@ -73,7 +74,11 @@ Getting the project up and running is straightforward. The project is split into
    ```bash
    python phase2_core_ml.py
    ```
-5. Run Phase 3 to link temporal attack chains, generate SHAP explanations, and output the final alerts:
+5. Run Phase 2B (Optional but Recommended) to train the PyTorch Sequence Model for the `_v2` Deep Learning architecture:
+   ```bash
+   python phase2b_sequence_model.py
+   ```
+6. Run Phase 3 to link temporal attack chains, generate SHAP explanations, and output the final alerts:
    ```bash
    python phase3_chain_and_shap.py
    ```
@@ -111,4 +116,4 @@ While the SOC Assistant is a highly functional prototype, there are deliberate d
 1. **Synthetic Data Constraints:** The entire training and evaluation pipeline relies on synthetically generated data. While we rigorously model noise, temporal spacing, and baseline drift, synthetic data fundamentally cannot capture every obscure, compounding dependency or behavioral anomaly present in a real-world enterprise network.
 2. **Dataset Size & Class Imbalance:** To ensure the pipeline executes swiftly on local machines for the hackathon demonstration, the dataset size is intentionally constrained. Real-world SIEMs process terabytes of data daily. Furthermore, while we employ sample weighting, the artificial class imbalance ratios may not perfectly mirror real-world attack distributions.
 3. **Database Architecture:** The current implementation uses a single-node PostgreSQL architecture. This limits concurrent read/write throughput during high-velocity live simulations. In a production environment, this would need to be replaced with a distributed time-series database or a scalable event streaming platform (e.g., Apache Kafka).
-4. **Feature Engineering vs. Deep Learning (Deliberate Tradeoff):** We consciously chose to use explicit, rolling-window feature engineering paired with XGBoost rather than deploying recurrent deep learning models (like LSTMs). While an LSTM could theoretically uncover deeper sequential patterns on its own, it acts as an impenetrable "black box." In cybersecurity, an analyst must understand exactly *why* an alert fired. Our feature-engineered approach allows SHAP to perfectly dissect the model's reasoning and provide plain-English, actionable explainability. We traded marginal deep-learning pattern recognition for 100% analyst transparency and trust.
+4. **Hybrid Deep Learning & Explainability:** A major challenge in cybersecurity is that Deep Learning models (like LSTMs/GRUs) act as impenetrable "black boxes", whereas analysts need strict transparency (why did this alert fire?). We solved this by building a hybrid architecture: we use a PyTorch GRU to uncover deep chronological sequence patterns and output a single mathematical anomaly score (`ae_error`), which is then fed into our XGBoost classifier as an 8th feature. This allows SHAP to perfectly dissect the model's reasoning while leveraging the raw predictive power of neural networks. We achieved deep-learning pattern recognition with 100% analyst transparency.

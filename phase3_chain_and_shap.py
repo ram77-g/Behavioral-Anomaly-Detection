@@ -22,15 +22,21 @@ except ImportError:
 
 if __name__ == '__main__':
     print("Loading scored events and models...")
-    events_df = pd.read_csv(os.path.join(DATA_DIR, 'scored_events.csv'))
+    
+    if os.path.exists(os.path.join(DATA_DIR, 'scored_events_v2.csv')):
+        print("Found _v2 artifacts! Using Sequence-Aware Data.")
+        events_df = pd.read_csv(os.path.join(DATA_DIR, 'scored_events_v2.csv'))
+        xgb_model = joblib.load(os.path.join(DATA_DIR, 'xgboost_v2.joblib'))
+        le = joblib.load(os.path.join(DATA_DIR, 'label_encoder_v2.joblib'))
+        feature_cols = joblib.load(os.path.join(DATA_DIR, 'feature_cols_v2.joblib'))
+    else:
+        events_df = pd.read_csv(os.path.join(DATA_DIR, 'scored_events.csv'))
+        xgb_model = joblib.load(os.path.join(DATA_DIR, 'xgboost.joblib'))
+        le = joblib.load(os.path.join(DATA_DIR, 'label_encoder.joblib'))
+        feature_cols = ['hour_deviation', 'session_duration_zscore', 'is_new_device', 'is_new_geo', 
+                        'geo_velocity', 'recent_failed_auth_count', 'has_privileged_command']
+        
     events_df['timestamp'] = pd.to_datetime(events_df['timestamp'])
-
-    xgb_model = joblib.load(os.path.join(DATA_DIR, 'xgboost.joblib'))
-    le = joblib.load(os.path.join(DATA_DIR, 'label_encoder.joblib'))
-
-# Define feature columns used in XGBoost
-feature_cols = ['hour_deviation', 'session_duration_zscore', 'is_new_device', 'is_new_geo', 
-                'geo_velocity', 'recent_failed_auth_count', 'has_privileged_command']
 
 CHAIN_PATTERNS = [
     {

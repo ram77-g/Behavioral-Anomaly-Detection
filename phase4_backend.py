@@ -17,10 +17,33 @@ from sqlalchemy import create_engine, text, inspect
 from dotenv import load_dotenv
 from phase2_core_ml import compute_rolling_features
 from phase3_chain_and_shap import detect_chains, CHAIN_PATTERNS
+import torch
+import torch.nn as nn
+from collections import deque
+
+class SequencePredictor(nn.Module):
+    def __init__(self, num_resources, num_auth, num_numeric,
+                 res_dim=8, auth_dim=4, hidden_dim=64):
+        super().__init__()
+        self.resource_embed = nn.Embedding(num_resources, res_dim)
+        self.auth_embed = nn.Embedding(num_auth, auth_dim)
+        input_dim = res_dim + auth_dim + num_numeric
+        self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True)
+        self.resource_head = nn.Linear(hidden_dim, num_resources)
+        self.auth_head = nn.Linear(hidden_dim, num_auth)
+        self.numeric_head = nn.Linear(hidden_dim, num_numeric)
+
+    def forward(self, ctx_resource, ctx_auth, ctx_numeric):
+        r_emb = self.resource_embed(ctx_resource)
+        a_emb = self.auth_embed(ctx_auth)
+        x = torch.cat([r_emb, a_emb, ctx_numeric], dim=-1)
+        _, h_n = self.gru(x)
+        h = h_n[-1]
+        return self.resource_head(h), self.auth_head(h), self.numeric_head(h)
 
 load_dotenv()
 
-app = FastAPI(title="Honeywell SOC Assistant API")
+app = FastAPI(title="Tracewell SOC Assistant API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -237,8 +260,20 @@ label_encoder = None
 shap_explainer = None
 historical_state = {}
 
+# v2 globals
+use_v2_models = False
+sequence_model = None
+resource_encoder = None
+auth_encoder = None
+sequence_numeric_scaler = None
+feature_cols_v2 = None
+entity_state_buffers = {}
+import joblib
+
 def init_live_engine():
     global live_generator, iso_forest_model, xgboost_model, label_encoder, shap_explainer, historical_state, live_context_df
+    global use_v2_models, sequence_model, resource_encoder, auth_encoder, sequence_numeric_scaler, feature_cols_v2, entity_state_buffers
+    
     if live_generator is not None:
         return # already initialized
         
@@ -246,9 +281,26 @@ def init_live_engine():
     
     # 1. Load ML Models
     DATA_DIR = './data'
-    iso_forest_model = joblib.load(os.path.join(DATA_DIR, 'iso_forest.joblib'))
-    xgboost_model = joblib.load(os.path.join(DATA_DIR, 'xgboost.joblib'))
-    label_encoder = joblib.load(os.path.join(DATA_DIR, 'label_encoder.joblib'))
+    if os.path.exists(os.path.join(DATA_DIR, 'xgboost_v2.joblib')):
+        print("Found _v2 Sequence Models! Loading stateful ensemble...")
+        use_v2_models = True
+        iso_forest_model = joblib.load(os.path.join(DATA_DIR, 'iso_forest_v2.joblib'))
+        xgboost_model = joblib.load(os.path.join(DATA_DIR, 'xgboost_v2.joblib'))
+        label_encoder = joblib.load(os.path.join(DATA_DIR, 'label_encoder_v2.joblib'))
+        feature_cols_v2 = joblib.load(os.path.join(DATA_DIR, 'feature_cols_v2.joblib'))
+        resource_encoder = joblib.load(os.path.join(DATA_DIR, 'resource_encoder.joblib'))
+        auth_encoder = joblib.load(os.path.join(DATA_DIR, 'auth_encoder.joblib'))
+        sequence_numeric_scaler = joblib.load(os.path.join(DATA_DIR, 'sequence_numeric_scaler.joblib'))
+        
+        sequence_model = SequencePredictor(len(resource_encoder.classes_), len(auth_encoder.classes_), 7)
+        sequence_model.load_state_dict(torch.load(os.path.join(DATA_DIR, 'sequence_model.pt'), map_location='cpu'))
+        sequence_model.eval()
+        entity_state_buffers = {}
+    else:
+        print("Loading baseline models...")
+        iso_forest_model = joblib.load(os.path.join(DATA_DIR, 'iso_forest.joblib'))
+        xgboost_model = joblib.load(os.path.join(DATA_DIR, 'xgboost.joblib'))
+        label_encoder = joblib.load(os.path.join(DATA_DIR, 'label_encoder.joblib'))
     
     # Explainability Engine
     # Note: we use TreeExplainer for XGBoost which is extremely fast
@@ -305,7 +357,12 @@ def init_live_engine():
     temp_featured['session_duration_zscore'] = temp_featured.apply(get_zscore, axis=1)
     temp_featured['hour_deviation'] = temp_featured.apply(get_hour_dev, axis=1)
     
-    temp_featured['anomaly_score'] = -iso_forest_model.score_samples(temp_featured[feature_cols])
+    if use_v2_models:
+        temp_featured['ae_error'] = 1.46
+        temp_featured['anomaly_score'] = -iso_forest_model.score_samples(temp_featured[feature_cols_v2])
+    else:
+        temp_featured['anomaly_score'] = -iso_forest_model.score_samples(temp_featured[feature_cols])
+        
     live_context_df = temp_featured.copy()
 async def simulation_loop():
     global sim_index, is_sim_running, live_context_df
@@ -344,8 +401,52 @@ async def simulation_loop():
             featured_df['session_duration_zscore'] = featured_df.apply(get_zscore, axis=1)
             featured_df['hour_deviation'] = featured_df.apply(get_hour_dev, axis=1)
 
-            # Pre-compute anomaly score on entire context so sliding window retains it for the dynamic threshold
-            featured_df['anomaly_score'] = -iso_forest_model.score_samples(featured_df[feature_cols])
+            if use_v2_models:
+                ae_errors = []
+                base_features_for_gru = ['hour_deviation', 'session_duration_zscore', 'is_new_device', 'is_new_geo', 'geo_velocity', 'recent_failed_auth_count', 'has_privileged_command']
+                
+                for idx, row in featured_df.iterrows():
+                    if not row['is_new_event']:
+                        err = row['ae_error'] if pd.notna(row.get('ae_error')) else 1.46
+                        ae_errors.append(err)
+                    else:
+                        eid = row['entity_id']
+                        if eid not in entity_state_buffers:
+                            entity_state_buffers[eid] = deque(maxlen=9)
+                        
+                        buf = entity_state_buffers[eid]
+                        if len(buf) == 9:
+                            ctx_res = [x['resource_accessed'] for x in buf]
+                            ctx_auth = [x['auth_method'] for x in buf]
+                            ctx_num = [x[base_features_for_gru].values.astype(np.float32) for x in buf]
+                            try:
+                                r_idx = torch.tensor(resource_encoder.transform(ctx_res), dtype=torch.long).unsqueeze(0)
+                                a_idx = torch.tensor(auth_encoder.transform(ctx_auth), dtype=torch.long).unsqueeze(0)
+                                num_scaled = sequence_numeric_scaler.transform(ctx_num)
+                                n_val = torch.tensor(num_scaled, dtype=torch.float32).unsqueeze(0)
+                                
+                                with torch.no_grad():
+                                    p_res, p_auth, p_num = sequence_model(r_idx, a_idx, n_val)
+                                    t_res = resource_encoder.transform([row['resource_accessed']])[0]
+                                    t_auth = auth_encoder.transform([row['auth_method']])[0]
+                                    t_num = sequence_numeric_scaler.transform([row[base_features_for_gru].values.astype(np.float32)])[0]
+                                    
+                                    l_res = nn.CrossEntropyLoss()(p_res, torch.tensor([t_res]))
+                                    l_auth = nn.CrossEntropyLoss()(p_auth, torch.tensor([t_auth]))
+                                    l_num = nn.MSELoss()(p_num, torch.tensor(t_num).unsqueeze(0))
+                                    err = (l_res + l_auth).item() + 0.5 * l_num.item()
+                            except ValueError:
+                                err = 1.46
+                        else:
+                            err = 1.46
+                            
+                        ae_errors.append(err)
+                        buf.append(row)
+                
+                featured_df['ae_error'] = ae_errors
+                featured_df['anomaly_score'] = -iso_forest_model.score_samples(featured_df[feature_cols_v2])
+            else:
+                featured_df['anomaly_score'] = -iso_forest_model.score_samples(featured_df[feature_cols])
             
             # Extract just the newly generated rows using the marker
             current_batch = featured_df[featured_df['is_new_event'] == True].copy()
@@ -367,7 +468,7 @@ async def simulation_loop():
                     historical_state['hour_mean'][eid] = pd.to_datetime(row['timestamp']).hour
             
             # 4. ML Scoring (Classification)
-            X_batch = current_batch[feature_cols]
+            X_batch = current_batch[feature_cols_v2 if use_v2_models else feature_cols]
             
             # XGBoost Classification
             probs = xgboost_model.predict_proba(X_batch)
@@ -402,7 +503,8 @@ async def simulation_loop():
             if len(alerts) > 0:
                 print(f"Generated {len(new_events_df)} events. {len(alerts)} alerts detected.")
                 # Generate SHAP reasons
-                shap_values = shap_explainer.shap_values(alerts[feature_cols])
+                active_cols = feature_cols_v2 if use_v2_models else feature_cols
+                shap_values = shap_explainer.shap_values(alerts[active_cols])
                 reasons = []
                 for i in range(len(alerts)):
                     row_reasons = []
@@ -414,7 +516,7 @@ async def simulation_loop():
                     
                     top_idx = np.argmax(row_shap)
                     if row_shap[top_idx] > 0:
-                        row_reasons.append(f"Anomalous {feature_cols[top_idx]}")
+                        row_reasons.append(f"Anomalous {active_cols[top_idx]}")
                     reasons.append(" | ".join(row_reasons) if row_reasons else "Anomalous baseline deviation")
                 
                 alerts['reasons'] = reasons
@@ -425,6 +527,10 @@ async def simulation_loop():
                     
                     if 'is_new_event' in alert_dict:
                         del alert_dict['is_new_event']
+                    
+                    # Prevent postgres schema crash by dropping the new feature
+                    if 'ae_error' in alert_dict:
+                        del alert_dict['ae_error']
                         
                     risk_score = calculate_risk_score(alert_dict)
                     attack_type = alert_dict['predicted_attack_class'] if not alert_dict.get('chain_involved') else alert_dict.get('chain_type', 'chain_credential_compromise')

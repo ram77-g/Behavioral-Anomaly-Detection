@@ -239,7 +239,7 @@ export default function App() {
       <div className="navbar" style={{ borderBottom: simulationMode ? '2px solid #ef4444' : '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center' }}>
           <div className="nav-title" style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-            <Shield color={simulationMode ? "#ef4444" : "#3b82f6"} /> Honeywell SOC Assistant
+            <Shield color={simulationMode ? "#ef4444" : "#3b82f6"} /> Tracewell SOC Assistant
           </div>
             
           <div style={{ display: 'flex', background: 'var(--bg-dark)', borderRadius: '6px', padding: '2px', border: '1px solid var(--border-color)', marginLeft: '2rem' }}>
@@ -568,6 +568,9 @@ export default function App() {
           );
         })()
       )}
+      <div style={{ textAlign: 'center', fontSize: '0.8rem', color: 'var(--text-muted)', padding: '15px 0', marginTop: 'auto' }}>
+        Developed by Ram Ganesh V
+      </div>
     </div>
   );
 }
