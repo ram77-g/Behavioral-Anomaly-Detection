@@ -12,6 +12,13 @@ export default function App() {
   const [isLightMode, setIsLightMode] = useState(false);
   const [simulationMode, setSimulationMode] = useState(false);
   const [isSimRunning, setIsSimRunning] = useState(false);
+  
+  // New States for Search/Filter & View Toggle
+  const [currentView, setCurrentView] = useState('overview'); // 'overview' | 'alerts'
+  const [searchTerm, setSearchTerm] = useState('');
+  const [tierFilter, setTierFilter] = useState('All');
+  const [typeFilter, setTypeFilter] = useState('All');
+
   const graphRef = useRef(null);
   const networkRef = useRef(null);
 
@@ -141,7 +148,7 @@ export default function App() {
 
     if (networkRef.current) networkRef.current.destroy();
     networkRef.current = new Network(graphRef.current, data, options);
-  }, [selectedAlert, isLightMode]);
+  }, [selectedAlert, isLightMode, currentView]);
 
   // 4. Handle Feedback Action
   const handleFeedback = (decision) => {
@@ -299,8 +306,18 @@ export default function App() {
         </button>
       </div>
 
+      {/* VIEW TABS */}
+      <div className="view-tabs">
+        <button className={`tab-btn ${currentView === 'overview' ? 'active' : ''}`} onClick={() => setCurrentView('overview')}>
+          Dashboard Overview
+        </button>
+        <button className={`tab-btn ${currentView === 'alerts' ? 'active' : ''}`} onClick={() => setCurrentView('alerts')}>
+          Alert Queue Explorer
+        </button>
+      </div>
+
       {alerts.length === 0 ? (
-        <div style={{height: 'calc(100vh - 60px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-dark)', color: 'var(--text-main)'}}>
+        <div style={{height: 'calc(100vh - 120px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-dark)', color: 'var(--text-main)'}}>
           {simulationMode ? (
             <>
               <Activity size={64} color={isSimRunning ? "#ef4444" : "#94a3b8"} style={{marginBottom: '1rem', animation: isSimRunning ? 'pulse 2s infinite' : 'none'}} />
@@ -317,17 +334,109 @@ export default function App() {
             </>
           )}
         </div>
+      ) : currentView === 'overview' ? (
+        (() => {
+          const avgRisk = (alerts.reduce((acc, a) => acc + a.adaptive_risk_score, 0) / (alerts.length || 1)).toFixed(1);
+          const criticalAlerts = alerts.filter(a => a.adaptive_risk_score >= 70 || a.chain_involved).length;
+          const attackCounts = alerts.reduce((acc, a) => {
+            const type = a.chain_involved ? (a.chain_type || 'chain_compromise') : a.predicted_attack_class;
+            acc[type] = (acc[type] || 0) + 1;
+            return acc;
+          }, {});
+
+          return (
+            <div className="overview-wrapper">
+              <div className="overview-container fade-in">
+                <h2 style={{marginTop: '1rem', marginBottom: '1.5rem', color: 'var(--text-main)'}}>Security Operations Overview</h2>
+              <div className="stats-grid">
+                <div className="stat-card">
+                  <div className="stat-title"><AlertTriangle size={16} /> Total Alerts</div>
+                  <div className="stat-value">{alerts.length}</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-title"><Activity size={16} /> Avg Risk Score</div>
+                  <div className="stat-value">{avgRisk}</div>
+                </div>
+                <div className="stat-card critical">
+                  <div className="stat-title"><ShieldAlert size={16} /> Critical Alerts (Tier 1)</div>
+                  <div className="stat-value red">{criticalAlerts}</div>
+                </div>
+              </div>
+              
+              <h3 style={{marginTop: '2rem', marginBottom: '1rem', color: 'var(--text-main)'}}>Alert Breakdown by Attack Type</h3>
+              <div className="breakdown-grid">
+                {Object.entries(attackCounts).sort((a,b) => b[1] - a[1]).map(([type, count]) => (
+                  <div key={type} className="breakdown-card">
+                    <div className="breakdown-title">{type.replace(/_/g, ' ').toUpperCase()}</div>
+                    <div className="breakdown-count">{count} alerts</div>
+                    <div className="meter-bg" style={{marginTop: '0.5rem'}}>
+                      <div className="meter-fill" style={{width: `${(count / alerts.length) * 100}%`, background: type.includes('chain') ? '#ef4444' : '#3b82f6'}}></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              
+              <div style={{marginTop: '3rem', textAlign: 'center'}}>
+                <button className="btn" style={{background: '#3b82f6', color: 'white', padding: '10px 24px', fontSize: '1.1rem'}} onClick={() => setCurrentView('alerts')}>
+                  Go to Alert Queue →
+                </button>
+              </div>
+              </div>
+            </div>
+          );
+        })()
       ) : !selectedAlert ? null : (
+        (() => {
+          const uniqueTypes = [...new Set(alerts.map(a => a.chain_involved ? (a.chain_type || 'chain_compromise') : a.predicted_attack_class))];
+          const filteredAlerts = alerts.filter(alert => {
+            if (searchTerm && !alert.entity_id.toLowerCase().includes(searchTerm.toLowerCase()) && !alert.source_ip.includes(searchTerm)) return false;
+            
+            const isTier1 = alert.adaptive_risk_score >= 70 || alert.chain_involved;
+            if (tierFilter === 'Tier 1' && !isTier1) return false;
+            if (tierFilter === 'Tier 2' && isTier1) return false;
+            
+            const typeStr = alert.chain_involved ? (alert.chain_type || 'chain_compromise') : alert.predicted_attack_class;
+            if (typeFilter !== 'All' && typeFilter !== typeStr) return false;
+            return true;
+          });
+
+          return (
         <div className="app-container">
         {/* SIDEBAR: Alert Queue */}
         <div className="alert-sidebar fade-in">
-          <div className="sidebar-header">
-            <span style={{display: 'flex', alignItems: 'center', gap: '8px'}}><AlertTriangle size={18} color="#ef4444"/> Alert Queue</span>
-            <span className="count">{alerts.length} Pending</span>
+          <div className="sidebar-header" style={{flexDirection: 'column', alignItems: 'stretch', paddingBottom: '1rem'}}>
+            <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '1rem'}}>
+              <span style={{display: 'flex', alignItems: 'center', gap: '8px'}}><AlertTriangle size={18} color="#ef4444"/> Alert Queue</span>
+              <span className="count">{filteredAlerts.length} Pending</span>
+            </div>
+            
+            {/* Filter Controls */}
+            <div className="filter-controls" style={{display: 'flex', flexDirection: 'column', gap: '8px'}}>
+              <input 
+                type="text" 
+                placeholder="Search entity or IP..." 
+                value={searchTerm} 
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="filter-input"
+              />
+              <div style={{display: 'flex', gap: '8px'}}>
+                <select value={tierFilter} onChange={(e) => setTierFilter(e.target.value)} className="filter-select">
+                  <option value="All">All Tiers</option>
+                  <option value="Tier 1">Tier 1 (Critical)</option>
+                  <option value="Tier 2">Tier 2 (Safety Net)</option>
+                </select>
+                <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="filter-select">
+                  <option value="All">All Types</option>
+                  {uniqueTypes.map(t => (
+                    <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
           </div>
           
           <div className="alert-list">
-            {alerts.map(alert => (
+            {filteredAlerts.map(alert => (
               <div 
                 key={alert.id} 
                 className={`alert-card ${selectedAlert.id === alert.id ? 'selected' : ''} ${alert.chain_involved ? 'chain' : ''}`}
@@ -339,8 +448,8 @@ export default function App() {
                     Risk: {alert.adaptive_risk_score}
                   </span>
                 </div>
-                <div style={{fontSize: '0.85rem', color: 'var(--text-muted)'}}>
-                  {alert.chain_involved ? 'Chain Compromise (Critical)' : alert.predicted_attack_class.replace('_', ' ')}
+                <div style={{fontSize: '0.85rem', color: 'var(--text-muted)', textTransform: 'capitalize'}}>
+                  {alert.chain_involved ? (alert.chain_type ? alert.chain_type.replace(/_/g, ' ') : 'Chain Compromise (Critical)') : alert.predicted_attack_class.replace(/_/g, ' ')}
                 </div>
               </div>
             ))}
@@ -355,7 +464,7 @@ export default function App() {
             <div className={`stat-card fade-in ${selectedAlert.chain_involved ? 'critical' : ''}`}>
               <div className="stat-title"><Cpu size={16} /> ML Prediction</div>
               <div className={`stat-value ${selectedAlert.chain_involved ? 'red' : ''}`}>
-                {selectedAlert.chain_involved ? 'Chain Attack' : selectedAlert.predicted_attack_class.replace('_', ' ').toUpperCase()}
+                {selectedAlert.chain_involved ? (selectedAlert.chain_type ? selectedAlert.chain_type.replace(/_/g, ' ').toUpperCase() : 'CHAIN ATTACK') : selectedAlert.predicted_attack_class.replace(/_/g, ' ').toUpperCase()}
               </div>
               <div style={{marginTop: '0.75rem'}}>
                 <div style={{fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px'}}>AI Confidence Level</div>
@@ -454,8 +563,10 @@ export default function App() {
             </div>
           </div>
 
+          </div>
         </div>
-        </div>
+          );
+        })()
       )}
     </div>
   );

@@ -90,7 +90,7 @@ body {
 /* Layout */
 .app-container {
   display: flex;
-  height: calc(100vh - 70px);
+  height: calc(100vh - 130px); /* Adjusted for Navbar + View Tabs */
   padding: 1.75rem 2rem;
   gap: 1.75rem;
 }
@@ -549,3 +549,122 @@ body.light-theme .meter-bg {
 body.light-theme .risk-high { color: #b91c1c; border-color: rgba(239, 68, 68, 0.4); background: #fef2f2; }
 body.light-theme .risk-med { color: #b45309; border-color: rgba(245, 158, 11, 0.4); background: #fffbeb; }
 body.light-theme .risk-low { color: #047857; border-color: rgba(16, 185, 129, 0.4); background: #ecfdf5; }
+
+/* OVERVIEW DASHBOARD & FILTERS */
+.view-tabs {
+  display: flex;
+  gap: 1rem;
+  padding: 0.5rem 1.5rem;
+  background: var(--bg-dark);
+  border-bottom: 1px solid var(--border-color);
+}
+.tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 0.5rem 1rem;
+  border-bottom: 2px solid transparent;
+}
+.tab-btn.active {
+  color: var(--text-main);
+  border-bottom: 2px solid #3b82f6;
+}
+
+.overview-wrapper {
+  height: calc(100vh - 120px);
+  overflow-y: auto;
+  width: 100%;
+}
+
+/* Custom Scrollbar for Overview */
+.overview-wrapper::-webkit-scrollbar {
+  width: 8px;
+}
+.overview-wrapper::-webkit-scrollbar-track {
+  background: transparent;
+}
+.overview-wrapper::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+.overview-wrapper::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+.overview-container {
+  padding: 2rem;
+  padding-bottom: 4rem; /* Extra padding to prevent button cutoff */
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.breakdown-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 1rem;
+}
+
+.breakdown-card {
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  padding: 1.25rem;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px -1px var(--shadow-color);
+}
+.breakdown-title {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.breakdown-count {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.filter-input {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+.filter-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.filter-select {
+  flex: 1;
+  padding: 8px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+.filter-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+/* Fix dropdown options color in dark mode */
+.filter-select option {
+  background: var(--bg-dark);
+  color: var(--text-main);
+}
+
+/* Light Mode Overrides for Overview */
+body.light-theme .tab-btn.active { color: #0f172a; }
+body.light-theme .breakdown-card { background: rgba(255, 255, 255, 0.8); }
+body.light-theme .filter-input, body.light-theme .filter-select { background: #ffffff; color: #0f172a; }
+body.light-theme .filter-select option { background: #ffffff; color: #0f172a; }

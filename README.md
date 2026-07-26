@@ -1,6 +1,6 @@
 # Honeywell SOC Assistant: AI-Powered Behavioral Anomaly Detection
 
-**Version:** v1.5 (Live Simulation Integrated)
+**Version:** v1.6 (Live Simulation Integrated)
 
 ## Application Description
 The Honeywell SOC Assistant is an AI-powered Cybersecurity Analyst Copilot designed to combat alert fatigue in modern Security Operations Centers. Unlike traditional SIEM systems that rely on static rules, this platform leverages Unsupervised and Supervised Machine Learning (Isolation Forest & XGBoost) to learn the unique behavioral baselines of network entities (users and edge devices) in real-time. It automatically detects anomalies, classifies cyber attacks with high precision, reconstructs complex multi-stage Kill Chains, and explains its exact reasoning using Explainable AI (SHAP) directly within an interactive React dashboard.
@@ -28,6 +28,8 @@ The Honeywell SOC Assistant is an AI-powered Cybersecurity Analyst Copilot desig
 
 ### Full-Stack Dashboard
 - **React (Vite) Frontend:** A sleek, glassmorphic UI featuring a dark-mode, micro-animations, and interactive components.
+- **Overview Landing Dashboard:** A dedicated aggregate metrics panel presenting real-time attack type breakdowns, average risk scores, and total alert volumes.
+- **Advanced Alert Queue Explorer:** Features real-time search and multi-variable filtering (by Tier, Entity ID, and Attack Class) to cleanly triage massive alert volumes.
 - **Real-Time WebSockets:** Instantly streams detected live threats from the FastAPI backend to the dashboard without refreshing.
 - **Interactive Relationship Graphs (vis-network):** Visually maps how entities, IPs, and geographic locations are connected during a cyber attack.
 - **Historical Analysis & Trendlines:** Dynamic charts displaying network risk scores over time.

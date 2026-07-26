@@ -46,9 +46,10 @@ The final alerts are pushed to a PostgreSQL database and served to a cutting-edg
 * **Live Simulation Engine (FastAPI):** A background `asyncio` engine running inside FastAPI that streams events, computes rolling baselines continuously in real-time, and scores them dynamically rather than replaying static scores.
 * **Adaptive Risk Score & MITRE Mapping:** Applies a score (0-100) based on contextual severity and automatically maps every attack (including Insider Drift -> T1078.004) to the official **MITRE ATT&CK Framework**.
 * **React + Vite Frontend (Glassmorphism Aesthetic):**
+  - **Overview Dashboard:** A landing panel presenting real-time aggregate metrics (Total Alerts, Avg Risk) and dynamic visual breakdown cards of active attack types.
+  - **Alert Queue Explorer with Filtering:** An advanced triage queue allowing analysts to filter by Entity ID, Tier Level (Critical vs Safety Net), and specific Attack Classes instantly.
   - **Real-Time WebSocket Push:** Instantly streams detected live threats from the FastAPI backend directly to the dashboard without polling.
   - **Attack Relationship Graph:** A visual `vis-network` node graph showing the physical relationship between the Entity, the Malicious IP, and the Compromised Resource.
-  - **Tiered Alert Queue:** Sorts alerts by severity and risk score dynamically.
 
 ---
 
