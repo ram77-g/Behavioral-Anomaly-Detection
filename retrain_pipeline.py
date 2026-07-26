@@ -129,7 +129,7 @@ def compute_rolling_features(df):
     df['recent_failed_auth_count'] = grouped['is_failed_auth'].transform(lambda x: x.rolling('10min').sum())
     
     rolling_mean_dur = grouped['session_duration'].transform(lambda x: x.rolling('30D', min_periods=1).mean())
-    rolling_std_dur = grouped['session_duration'].transform(lambda x: x.rolling('30D', min_periods=1).std().fillna(1.0))
+    rolling_std_dur = grouped['session_duration'].transform(lambda x: x.rolling('30D', min_periods=1).std().replace(0, 1.0).fillna(1.0))
     df['session_duration_zscore'] = (df['session_duration'] - rolling_mean_dur) / rolling_std_dur
     
     df['hour'] = df.index.hour

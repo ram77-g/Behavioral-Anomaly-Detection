@@ -116,11 +116,18 @@ def detect_chains(events_df, chain_patterns):
                     
                 # Check time gaps
                 time_valid = True
+                # Check adjacent steps to ensure chronological progression without massive isolated gaps
                 for step_idx in range(n_steps - 1):
                     diff = (window_rows[step_idx+1]['timestamp'] - window_rows[step_idx]['timestamp']).total_seconds() / 3600.0
                     if diff > max_gap:
                         time_valid = False
                         break
+                        
+                # Check total chain duration
+                if time_valid:
+                    total_diff = (window_rows[-1]['timestamp'] - window_rows[0]['timestamp']).total_seconds() / 3600.0
+                    if total_diff > max_gap:
+                        time_valid = False
                         
                 if time_valid:
                     for idx in window_indices:

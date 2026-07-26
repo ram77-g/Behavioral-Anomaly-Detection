@@ -330,7 +330,7 @@ if __name__ == '__main__':
     # Save
     entities_path = os.path.join(DATA_DIR, 'entities.csv')
     df_events.to_csv(os.path.join(DATA_DIR, 'events.csv'), index=False)
-    pd.DataFrame(list(generator.profiles.values())).to_csv(entities_path, index=False)
+    df_entities.to_csv(entities_path, index=False)
 
     print("\n=== PHASE 1 COMPLETE (REALISM PASS) ===")
     print(f"Total Entities: {len(df_entities)}")

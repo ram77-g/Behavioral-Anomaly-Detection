@@ -182,6 +182,7 @@ def init_db():
     
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE alerts ADD PRIMARY KEY (id);"))
+        conn.execute(text("ALTER TABLE live_alerts ADD PRIMARY KEY (id);"))
         
     print(f"Successfully wrote {len(df)} enriched alerts to PostgreSQL.")
 
@@ -338,9 +339,10 @@ async def simulation_loop():
             # 5. Chain Linking (Check if these new events complete a chain)
             detect_chains(featured_df, CHAIN_PATTERNS) # mutates featured_df
             
-            # Map the chain results back to current_batch (and fillna to prevent NaN truthiness bug)
-            current_batch['chain_involved'] = featured_df[featured_df['is_new_event'] == True]['chain_involved'].fillna(False).values
-            current_batch['chain_type'] = featured_df[featured_df['is_new_event'] == True]['chain_type'].replace({np.nan: None}).values
+            # Map the chain results back to current_batch securely via index alignment
+            chain_updates = featured_df.loc[current_batch.index, ['chain_involved', 'chain_type']]
+            current_batch['chain_involved'] = chain_updates['chain_involved'].fillna(False)
+            current_batch['chain_type'] = chain_updates['chain_type'].replace({np.nan: None})
             
             # 6. Filtering & SHAP
             threshold = 0.75 # Default threshold if percentile fails
@@ -417,9 +419,15 @@ async def simulation_loop():
 
 @app.post("/api/simulation/start")
 async def start_simulation():
-    global sim_task, is_sim_running
+    global sim_task, is_sim_running, sim_index
     if not is_sim_running:
         is_sim_running = True
+        
+        if sim_index == 0:
+            with engine.connect() as conn:
+                max_id = conn.execute(text("SELECT MAX(id) FROM live_alerts")).scalar()
+                sim_index = max_id if max_id is not None else 0
+                
         sim_task = asyncio.create_task(simulation_loop())
     return {"status": "started", "index": sim_index}
 
@@ -495,7 +503,10 @@ def get_entity_history(entity_id: str, mode: str = "static"):
             # Format timestamp nicely for UI
             try:
                 dt = pd.to_datetime(row.timestamp)
-                ts_str = dt.strftime("%H:%M")
+                if mode == "live":
+                    ts_str = dt.strftime("%H:%M:%S")
+                else:
+                    ts_str = dt.strftime("%m/%d %H:%M")
             except:
                 ts_str = str(row.timestamp)
                 
