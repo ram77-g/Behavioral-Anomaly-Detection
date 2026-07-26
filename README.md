@@ -36,35 +36,63 @@ The Honeywell SOC Assistant is an AI-powered Cybersecurity Analyst Copilot desig
 
 ---
 
-## Setup Instructions
+## Quick Start & Setup Instructions
+
+Getting the project up and running is straightforward. The project is split into the **ML Pipeline**, the **FastAPI Backend**, and the **React Frontend**.
 
 ### 1. Prerequisites
-* Python 3.9+
-* Node.js v18+
-* PostgreSQL installed and running locally
+* **Python 3.9+**
+* **Node.js v18+**
+* **PostgreSQL** (installed and running locally)
 
 ### 2. Database Configuration
-1. Create a PostgreSQL database named `Anomaly`.
-2. Rename the `.env.example` file to `.env` in the root directory.
-3. Update the `DATABASE_URL` in the `.env` file with your local PostgreSQL credentials:
-   `DATABASE_URL=postgresql://username:password@localhost:5432/Anomaly`
+1. Open your local PostgreSQL instance (via pgAdmin or psql) and create a new database named `Anomaly`.
+2. In the root directory of this project, rename the `.env.example` file to `.env`.
+3. Open `.env` and update the `DATABASE_URL` with your local PostgreSQL credentials:
+   ```env
+   DATABASE_URL=postgresql://username:password@localhost:5432/Anomaly
+   ```
 
 ### 3. Machine Learning Pipeline Execution
-Our pipeline is designed to run 100% locally on your machine.
-1. Open a terminal in the root directory.
-2. Install Python dependencies: `pip install pandas numpy scikit-learn xgboost shap sqlalchemy psycopg2-binary fastapi uvicorn websockets python-dotenv joblib requests`
-3. Run `python phase1_data_generator.py` to generate the foundational dataset (`data/events.csv`).
-4. Run `python phase2_core_ml.py` to engineer features and train the Isolation Forest and XGBoost models.
-5. Run `python phase3_chain_and_shap.py` to link temporal attack chains, generate SHAP explanations, and output the `data/final_alerts.csv`.
 
-### 4. Backend Setup
 1. Open a terminal in the root directory.
-2. Start the FastAPI server: `python -m uvicorn phase4_backend:app --reload`
-* The backend will automatically initialize the database table using the `data/final_alerts.csv` on the first startup.
+2. Install the required Python dependencies:
+   ```bash
+   pip install pandas numpy scikit-learn xgboost shap sqlalchemy psycopg2-binary fastapi uvicorn websockets python-dotenv joblib requests faker
+   ```
+3. Run Phase 1 to generate a fresh synthetic dataset (`data/events.csv`):
+   ```bash
+   python phase1_data_generator.py
+   ```
+4. Run Phase 2 to engineer features and train the Isolation Forest & XGBoost models:
+   ```bash
+   python phase2_core_ml.py
+   ```
+5. Run Phase 3 to link temporal attack chains, generate SHAP explanations, and output the final alerts:
+   ```bash
+   python phase3_chain_and_shap.py
+   ```
 
-### 5. Frontend Setup
-1. Open a new terminal and navigate to the `dashboard` directory.
-2. Install Node dependencies: `npm install`
-3. Start the React development server: `npm run dev`
-4. Access the SOC Assistant dashboard in your browser at the provided localhost URL.
-5. **Live Simulation:** Once on the dashboard, toggle the "Live Simulation" button at the top and hit **Start** to watch the real-time event stream!
+### 4. Start the FastAPI Backend
+1. Open a terminal in the root directory.
+2. Start the backend server using Uvicorn:
+   ```bash
+   python -m uvicorn phase4_backend:app --reload
+   ```
+*Note: On its very first startup, the backend will automatically connect to PostgreSQL, initialize the database tables, and seed them using the `data/final_alerts.csv` generated in Phase 3.*
+
+### 5. Start the React Frontend Dashboard
+1. Open a **new** terminal and navigate into the `dashboard` directory:
+   ```bash
+   cd dashboard
+   ```
+2. Install the necessary Node dependencies:
+   ```bash
+   npm install
+   ```
+3. Start the React development server:
+   ```bash
+   npm run dev
+   ```
+4. Click the `localhost` URL provided in the terminal to access the SOC Assistant dashboard in your browser.
+5. **Live Simulation Demo:** Once on the dashboard, toggle the **"Live Simulation"** button at the top menu and hit **Start** to watch the real-time event stream and continuous ML inference in action!

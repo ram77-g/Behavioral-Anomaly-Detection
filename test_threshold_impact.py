@@ -6,7 +6,7 @@ from sklearn.metrics import classification_report
 DATA_DIR = './data'
 
 print("Loading scored events...")
-events_df = pd.read_csv(os.path.join(DATA_DIR, 'scored_events.csv'))
+events_df = pd.read_csv(os.path.join(DATA_DIR, 'final_alerts.csv'))
 
 # 95th Percentile
 threshold_95 = np.percentile(events_df['anomaly_score'], 95)

@@ -9,6 +9,7 @@ import json
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
+pd.set_option('future.no_silent_downcasting', True)
 import numpy as np
 import os
 import asyncio
