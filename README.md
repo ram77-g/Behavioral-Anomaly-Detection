@@ -1,6 +1,6 @@
 # Tracewell SOC Assistant: AI-Powered Behavioral Anomaly Detection
 
-**Version:** v1.6 (Live Simulation Integrated)
+**Version:** v2 (Live Simulation Integrated and Deep Learning Model integrated)
 
 ## Application Description
 The Tracewell SOC Assistant is an AI-powered Cybersecurity Analyst Copilot designed to combat alert fatigue in modern Security Operations Centers. Unlike traditional SIEM systems that rely on static rules, this platform leverages Unsupervised and Supervised Machine Learning (Isolation Forest & XGBoost) to learn the unique behavioral baselines of network entities (users and edge devices) in real-time. It automatically detects anomalies, classifies cyber attacks with high precision, reconstructs complex multi-stage Kill Chains, and explains its exact reasoning using Explainable AI (SHAP) directly within an interactive React dashboard.
