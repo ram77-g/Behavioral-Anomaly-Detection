@@ -35,7 +35,7 @@ for i, row in df.iterrows():
     alert = row.to_dict()
     
     risk_score = calculate_risk_score(alert)
-    attack_type = alert['predicted_attack_class'] if not alert['chain_involved'] else 'chain_credential_compromise'
+    attack_type = alert['predicted_attack_class'] if not alert.get('chain_involved') else alert.get('chain_type', 'chain_credential_compromise')
     mapping = MITRE_MAPPING.get(attack_type, MITRE_MAPPING['normal'])
     
     enriched_df = pd.DataFrame([{

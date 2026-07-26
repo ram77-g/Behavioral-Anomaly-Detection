@@ -242,7 +242,7 @@ class SyntheticDataGenerator:
                 current_timestamp += timedelta(seconds=1)
                 continue
                 
-            is_attack = random.random() < 0.05 # 5% chance of an attack pattern
+            is_attack = random.random() < 0.20 # 20% chance of an attack pattern (increased for responsive UI demonstration)
             
             if not is_attack:
                 eid = random.choice(list(self.profiles.keys()))

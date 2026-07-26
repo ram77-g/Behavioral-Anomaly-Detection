@@ -28,6 +28,7 @@ export default function App() {
   useEffect(() => {
     setIsLoading(true);
     setAlerts([]); // Clear UI while switching modes
+    setSelectedAlert(null); // Clear stale selections from previous mode
     const modeStr = simulationMode ? "live" : "static";
     const ws = new WebSocket(`ws://127.0.0.1:8000/ws/alerts/${modeStr}`);
     
@@ -55,36 +56,41 @@ export default function App() {
     return () => ws.close();
   }, [simulationMode]);
 
-  // Auto-select first alert if current selection is resolved/missing
+  // Auto-select first alert if current selection is resolved/missing, and keep it updated
   useEffect(() => {
     if (alerts.length > 0) {
-      const currentExists = selectedAlert && alerts.find(a => a.id === selectedAlert.id);
-      if (!currentExists) {
-        handleSelectAlert(alerts[0]);
-      }
+      setSelectedAlert(prev => {
+        const currentExists = prev && alerts.find(a => a.id === prev.id);
+        return currentExists || alerts[0];
+      });
     } else {
       setSelectedAlert(null);
     }
-  }, [alerts, selectedAlert]);
+  }, [alerts]);
 
   // 2. Fetch Entity History & Render Graph
   const handleSelectAlert = (alert) => {
     setSelectedAlert(alert);
+  };
+
+  // Dynamically fetch risk trend when selection changes or new alerts arrive (live updates)
+  useEffect(() => {
+    if (!selectedAlert) return;
     
     const modeStr = simulationMode ? "live" : "static";
-    // Fetch Trend
-    fetch(`http://127.0.0.1:8000/api/entity/${alert.entity_id}/history?mode=${modeStr}`)
+    fetch(`http://127.0.0.1:8000/api/entity/${selectedAlert.entity_id}/history?mode=${modeStr}`)
       .then(res => res.json())
       .then(data => {
         if (data.status === 'success') {
-          const formatted = data.risk_trend.map((t, idx) => ({
-            time: `T-${data.risk_trend.length - idx}`,
+          const formatted = data.risk_trend.map((t) => ({
+            time: t.timestamp,
             risk: t.risk_score
           }));
           setRiskTrend(formatted);
         }
-      });
-  };
+      })
+      .catch(err => console.error("Error fetching risk trend:", err));
+  }, [selectedAlert, alerts, simulationMode]);
 
   // 3. Update Graph dynamically whenever selectedAlert OR isLightMode changes
   useEffect(() => {

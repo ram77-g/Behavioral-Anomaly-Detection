@@ -14,6 +14,8 @@ import os
 import asyncio
 from sqlalchemy import create_engine, text, inspect
 from dotenv import load_dotenv
+from phase2_core_ml import compute_rolling_features
+from phase3_chain_and_shap import detect_chains, CHAIN_PATTERNS
 
 load_dotenv()
 
@@ -62,7 +64,11 @@ MITRE_MAPPING = {
     'lateral_movement': {'id': 'T1021', 'tactic': 'Lateral Movement'},
     'device_spoofing': {'id': 'T1036', 'tactic': 'Defense Evasion'},
     'chain_credential_compromise': {'id': 'T1078 -> T1567', 'tactic': 'Initial Access -> Exfiltration'},
+    'chain_stealth_exfiltration': {'id': 'T1078 -> T1048', 'tactic': 'Initial Access -> Exfiltration'},
+    'chain_brute_force_success': {'id': 'T1110 -> T1078', 'tactic': 'Credential Access -> Initial Access'},
+    'chain_lateral_movement': {'id': 'T1021 -> T1059', 'tactic': 'Lateral Movement -> Execution'},
     'insider_drift': {'id': 'T1078.004', 'tactic': 'Monitor - Valid Accounts'},
+    'low_and_slow': {'id': 'T1110.003', 'tactic': 'Credential Access - Password Spraying'},
     'normal': {'id': 'None', 'tactic': 'None'}
 }
 
@@ -73,7 +79,11 @@ ACTION_RECOMMENDATIONS = {
     'lateral_movement': 'Isolate host, revoke temporary session tokens.',
     'device_spoofing': 'Require re-authentication and device registration.',
     'chain_credential_compromise': 'CRITICAL: Lock account immediately, initiate Incident Response.',
+    'chain_stealth_exfiltration': 'CRITICAL: Block DB access, monitor for data extrusion, reset credentials.',
+    'chain_brute_force_success': 'CRITICAL: Compromised account via brute force. Lock immediately.',
+    'chain_lateral_movement': 'CRITICAL: Lateral movement detected. Isolate host and revoke all tokens.',
     'insider_drift': 'Monitor user footprint for legitimate role changes.',
+    'low_and_slow': 'Monitor for distributed login attempts over long durations.',
     'normal': 'No action required.'
 }
 
@@ -133,6 +143,10 @@ def init_db():
     mask = (df['predicted_attack_class'] != 'normal') | (df['chain_involved'] == True)
     df = df[mask].copy()
     
+    # Fix NaN truthiness
+    df['chain_involved'] = df['chain_involved'].fillna(False)
+    df['chain_type'] = df['chain_type'].replace({np.nan: None})
+    
     # Add an ID column
     df.insert(0, 'id', range(1, len(df) + 1))
     
@@ -146,7 +160,7 @@ def init_db():
         alert = row.to_dict()
         risk_scores.append(calculate_risk_score(alert))
         
-        attack_type = alert['predicted_attack_class'] if not alert['chain_involved'] else 'chain_credential_compromise'
+        attack_type = alert['predicted_attack_class'] if not alert.get('chain_involved') else alert.get('chain_type', 'chain_credential_compromise')
         mapping = MITRE_MAPPING.get(attack_type, MITRE_MAPPING['normal'])
         
         mitre_ids.append(mapping['id'])
@@ -241,8 +255,31 @@ def init_live_engine():
     
     # Seed context df with last ~200 events from history just to have rolling baselines
     events_hist['timestamp'] = pd.to_datetime(events_hist['timestamp'])
-    live_context_df = events_hist.tail(200).copy()
-
+    temp_df = events_hist.tail(200).copy()
+    temp_featured = compute_rolling_features(temp_df)
+    
+    # Manually backfill cold-start features for the seed context using historical_state
+    temp_featured['is_new_device'] = temp_featured['device_str'].apply(lambda x: 0 if x in historical_state['devices'] else 1)
+    temp_featured['is_new_geo'] = temp_featured['geo_location'].apply(lambda x: 0 if x in historical_state['geos'] else 1)
+    
+    def get_zscore(row):
+        eid = row['entity_id']
+        mean = historical_state['duration_mean'].get(eid, historical_state['global_duration_mean'])
+        std = historical_state['duration_std'].get(eid, historical_state['global_duration_std'])
+        std = max(std if pd.notna(std) else 1.0, 1.0)
+        return (row['session_duration'] - mean) / std
+        
+    def get_hour_dev(row):
+        eid = row['entity_id']
+        mean_hr = historical_state['hour_mean'].get(eid, historical_state['global_hour_mean'])
+        hr = pd.to_datetime(row['timestamp']).hour
+        return abs(hr - mean_hr)
+        
+    temp_featured['session_duration_zscore'] = temp_featured.apply(get_zscore, axis=1)
+    temp_featured['hour_deviation'] = temp_featured.apply(get_hour_dev, axis=1)
+    
+    temp_featured['anomaly_score'] = -iso_forest_model.score_samples(temp_featured[feature_cols])
+    live_context_df = temp_featured.copy()
 async def simulation_loop():
     global sim_index, is_sim_running, live_context_df
     try:
@@ -251,7 +288,7 @@ async def simulation_loop():
         while is_sim_running:
             # 1. Generate new events
             now = datetime.now()
-            new_events_df = live_generator.generate_live_events(num_events=random.randint(1, 3), current_timestamp=now)
+            new_events_df = live_generator.generate_live_events(num_events=random.randint(2, 4), current_timestamp=now)
             
             # 2. Merge with context for rolling features
             new_events_df['is_new_event'] = True
@@ -260,13 +297,6 @@ async def simulation_loop():
             
             # 3. Compute Features (Note: this sorts by entity_id)
             featured_df = compute_rolling_features(merged_df.copy())
-            
-            # Extract just the newly generated rows using the marker
-            current_batch = featured_df[featured_df['is_new_event'] == True].copy()
-            
-            # Fix cold-start uniqueness utilizing historical baseline
-            current_batch['is_new_device'] = current_batch['device_str'].apply(lambda x: 0 if x in historical_state['devices'] else 1)
-            current_batch['is_new_geo'] = current_batch['geo_location'].apply(lambda x: 0 if x in historical_state['geos'] else 1)
             
             # Patch continuous feature baselines utilizing full historical baseline instead of 200-row context
             def get_zscore(row):
@@ -282,18 +312,23 @@ async def simulation_loop():
                 hr = pd.to_datetime(row['timestamp']).hour
                 return abs(hr - mean_hr)
                 
-            current_batch['session_duration_zscore'] = current_batch.apply(get_zscore, axis=1)
-            current_batch['hour_deviation'] = current_batch.apply(get_hour_dev, axis=1)
+            featured_df['is_new_device'] = featured_df['device_str'].apply(lambda x: 0 if x in historical_state['devices'] else 1)
+            featured_df['is_new_geo'] = featured_df['geo_location'].apply(lambda x: 0 if x in historical_state['geos'] else 1)
+            featured_df['session_duration_zscore'] = featured_df.apply(get_zscore, axis=1)
+            featured_df['hour_deviation'] = featured_df.apply(get_hour_dev, axis=1)
+
+            # Pre-compute anomaly score on entire context so sliding window retains it for the dynamic threshold
+            featured_df['anomaly_score'] = -iso_forest_model.score_samples(featured_df[feature_cols])
+            
+            # Extract just the newly generated rows using the marker
+            current_batch = featured_df[featured_df['is_new_event'] == True].copy()
             
             # Update historical sets
             historical_state['devices'].update(current_batch['device_str'])
             historical_state['geos'].update(current_batch['geo_location'])
             
-            # 4. ML Scoring
+            # 4. ML Scoring (Classification)
             X_batch = current_batch[feature_cols]
-            
-            # Anomaly Score
-            current_batch['anomaly_score'] = -iso_forest_model.score_samples(X_batch)
             
             # XGBoost Classification
             probs = xgboost_model.predict_proba(X_batch)
@@ -303,9 +338,9 @@ async def simulation_loop():
             # 5. Chain Linking (Check if these new events complete a chain)
             detect_chains(featured_df, CHAIN_PATTERNS) # mutates featured_df
             
-            # Map the chain results back to current_batch
-            current_batch['chain_involved'] = featured_df[featured_df['is_new_event'] == True]['chain_involved'].values
-            current_batch['chain_type'] = featured_df[featured_df['is_new_event'] == True]['chain_type'].values
+            # Map the chain results back to current_batch (and fillna to prevent NaN truthiness bug)
+            current_batch['chain_involved'] = featured_df[featured_df['is_new_event'] == True]['chain_involved'].fillna(False).values
+            current_batch['chain_type'] = featured_df[featured_df['is_new_event'] == True]['chain_type'].replace({np.nan: None}).values
             
             # 6. Filtering & SHAP
             threshold = 0.75 # Default threshold if percentile fails
@@ -316,6 +351,9 @@ async def simulation_loop():
             mask = (current_batch['anomaly_score'] >= threshold) | (current_batch['chain_involved'] == True) | is_high_conf
             
             alerts = current_batch[mask].copy()
+            
+            # Deduplicate alerts in the same tick to prevent UI/DB spam from attack bursts
+            alerts = alerts.drop_duplicates(subset=['entity_id', 'predicted_attack_class'], keep='last').reset_index(drop=True)
             
             if len(alerts) > 0:
                 print(f"Generated {len(new_events_df)} events. {len(alerts)} alerts detected.")
@@ -345,7 +383,7 @@ async def simulation_loop():
                         del alert_dict['is_new_event']
                         
                     risk_score = calculate_risk_score(alert_dict)
-                    attack_type = alert_dict['predicted_attack_class'] if not alert_dict.get('chain_involved') else 'chain_credential_compromise'
+                    attack_type = alert_dict['predicted_attack_class'] if not alert_dict.get('chain_involved') else alert_dict.get('chain_type', 'chain_credential_compromise')
                     mapping = MITRE_MAPPING.get(attack_type, MITRE_MAPPING['normal'])
                     
                     sim_index += 1
@@ -367,7 +405,7 @@ async def simulation_loop():
             # Must sort by timestamp because compute_rolling_features leaves the df sorted by entity_id!
             live_context_df = featured_df.sort_values('timestamp').tail(200).copy()
             
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(1.0)
     except asyncio.CancelledError:
         print("Simulation task cancelled gracefully.")
     except Exception as e:
@@ -422,8 +460,8 @@ async def websocket_alerts(websocket: WebSocket, mode: str):
     table = "live_alerts" if mode == "live" else "alerts"
     
     await mgr.connect(websocket)
-    await websocket.send_json(_fetch_alerts_data(table))
     try:
+        await websocket.send_json(_fetch_alerts_data(table))
         while True:
             data = await websocket.receive_text()
     except WebSocketDisconnect:
@@ -440,10 +478,31 @@ async def trigger_broadcast(mode: str = "static"):
 def get_entity_history(entity_id: str, mode: str = "static"):
     table = "live_alerts" if mode == "live" else "alerts"
     with engine.connect() as conn:
-        query = text(f"SELECT timestamp, adaptive_risk_score FROM {table} WHERE entity_id = :eid ORDER BY timestamp DESC")
+        query = text(f"SELECT timestamp, adaptive_risk_score FROM {table} WHERE entity_id = :eid ORDER BY timestamp ASC")
         result = conn.execute(query, {"eid": entity_id})
-        trend = [{"timestamp": row.timestamp, "risk_score": row.adaptive_risk_score} for row in result]
-        return {"status": "success", "entity_id": entity_id, "risk_trend": trend[::-1]}
+        
+        trend = []
+        current_ema = None
+        alpha = 0.4 # Smoothing factor to prevent wild zig-zags in the graph
+        
+        for row in result:
+            score = row.adaptive_risk_score
+            if current_ema is None:
+                current_ema = score
+            else:
+                current_ema = (alpha * score) + ((1 - alpha) * current_ema)
+            
+            # Format timestamp nicely for UI
+            try:
+                dt = pd.to_datetime(row.timestamp)
+                ts_str = dt.strftime("%H:%M")
+            except:
+                ts_str = str(row.timestamp)
+                
+            trend.append({"timestamp": ts_str, "risk_score": int(current_ema)})
+            
+        # Return last 20 points max to keep graph readable
+        return {"status": "success", "entity_id": entity_id, "risk_trend": trend[-20:]}
 
 class FeedbackRequest(BaseModel):
     decision: str 
