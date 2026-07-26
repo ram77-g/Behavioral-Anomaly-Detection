@@ -126,9 +126,20 @@ def init_db():
             
     insp = inspect(engine)
     if insp.has_table('alerts'):
+        # Safely migrate existing databases to include alert_tier
+        columns = [col['name'] for col in insp.get_columns('alerts')]
+        if 'alert_tier' not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE alerts ADD COLUMN alert_tier VARCHAR;"))
+                
         if not insp.has_table('live_alerts'):
             with engine.begin() as conn:
                 conn.execute(text("CREATE TABLE live_alerts (LIKE alerts INCLUDING ALL);"))
+        else:
+            columns_live = [col['name'] for col in insp.get_columns('live_alerts')]
+            if 'alert_tier' not in columns_live:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE live_alerts ADD COLUMN alert_tier VARCHAR;"))
         print("Connected to PostgreSQL! Alerts table already exists.")
         return
         
@@ -179,14 +190,11 @@ def init_db():
     df['status'] = 'Open'
     df['analyst_notes'] = ''
     
-    # Drop alert_tier before DB insertion to maintain schema consistency
-    db_df = df.drop(columns=['alert_tier'], errors='ignore')
-    
-    # Write to PostgreSQL for Static DB
-    db_df.to_sql('alerts', engine, index=False)
+    # Write full df to PostgreSQL for Static DB (now includes alert_tier)
+    df.to_sql('alerts', engine, index=False)
     
     # Create the live_alerts table by copying the schema but with 0 rows
-    db_df.iloc[0:0].to_sql('live_alerts', engine, if_exists='replace', index=False)
+    df.iloc[0:0].to_sql('live_alerts', engine, if_exists='replace', index=False)
     
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE alerts ADD PRIMARY KEY (id);"))
@@ -433,10 +441,6 @@ async def simulation_loop():
                         'analyst_notes': ''
                     }])
                     
-                    # Drop alert_tier before DB insertion to prevent schema mismatch on existing databases
-                    if 'alert_tier' in enriched_df.columns:
-                        enriched_df = enriched_df.drop(columns=['alert_tier'])
-                        
                     enriched_df.to_sql('live_alerts', engine, if_exists='append', index=False)
                     asyncio.create_task(manager_live.broadcast(_fetch_alerts_data("live_alerts")))
             
